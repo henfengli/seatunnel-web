@@ -1,0 +1,3 @@
+{# proto 包 <option> 列表（填充进 select 的 innerHTML） #}
+<option value="">请选择 proto 包</option>
+{% for p in pkgs %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}

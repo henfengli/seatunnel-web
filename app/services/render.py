@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..core.config import BASE_DIR
-from ..core.crypto import decrypt
+from ..core.crypto import decrypt_conn
 from ..models import Job, JobVersion
 from . import envs
 from .field_mapping import mapping_to_schema_fields
@@ -37,18 +37,6 @@ _TEMPLATES = {
     "mongodb": "mongodb_to_doris.conf.j2",
     "doris": "doris_to_doris.conf.j2",
 }
-
-
-def _decrypted_connection(job: Job) -> dict:
-    """数据源 connection 解密（key 含 password/auth 的密文字段）。"""
-    conn = dict(job.datasource.connection)
-    for k, v in conn.items():
-        if isinstance(v, str) and v and ("password" in k.lower() or "auth" in k.lower()):
-            try:
-                conn[k] = decrypt(v)
-            except Exception:  # noqa: BLE001
-                pass
-    return conn
 
 
 def _parse_extra_config(raw: str | None) -> list[str]:
@@ -164,7 +152,7 @@ def render_conf(db: Session, job: Job) -> str:
     source_db = source_table = ""
     if job.source_type != "kafka" and "." in job.source_ref:
         source_db, source_table = job.source_ref.split(".", 1)
-    ds = _decrypted_connection(job)
+    ds = decrypt_conn(job.datasource.connection)
     # kafka_ts（sink_only 标记）存在时，模板生成 Metadata transform 提取 kafka 时间戳
     kafka_ts_enabled = any(
         m.get("source") == "kafka_ts" and m.get("sink_only") for m in job.field_mapping
@@ -220,7 +208,7 @@ def render_and_save(db: Session, job: Job, note: str = "", created_by: str = "sy
         job_id=job.id,
         version=max_version + 1,
         conf=encrypt(conf),
-        field_mapping_json=job.field_mapping_json,
+        field_mapping=job.field_mapping,
         proto_version=job.proto_package.current_version if job.proto_package else None,
         note=note,
         created_by=created_by,
