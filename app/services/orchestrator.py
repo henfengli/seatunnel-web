@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from ..core.crypto import decrypt_safe, sanitize_error
-from ..models import Job, JobEvent, JobVersion
+from ..models import Job, JobEvent, JobVersion, MetricSample
 from . import doris_ddl, envs, render, seatunnel_client as st
 
 # SeaTunnel 作业状态 -> 管理端状态（其余状态不改动）
@@ -78,18 +78,28 @@ def _needs_recreate_msg(reasons: list[str]) -> str:
             + "。请到作业详情页点「重建目标表」（可选删表重建或数据迁移重建）")
 
 
+#: 允许提交的状态（白名单）：RUNNING/UPDATING 等一律拒绝，防线不依赖调用方
+SUBMITTABLE_STATES = ("DRAFT", "FAILED", "ERROR", "STOPPED")
+
+
 def submit(db: Session, job: Job, start_with_savepoint: bool = False) -> dict:
-    """CAS 防并发提交 -> 防重复消费 -> savepoint 就绪检查 -> 建表 -> 渲染留档 -> 提交 SeaTunnel。"""
+    """状态白名单 + CAS 防并发提交 -> 防重复消费 -> savepoint 就绪检查 -> 建表 -> 渲染留档 -> 提交。"""
     prev_status = job.status
-    # CAS：状态原子的 DRAFT/FAILED/ERROR/STOPPED -> UPDATING，防批量+手动/双击并发提交出双作业
+    if prev_status not in SUBMITTABLE_STATES:
+        return {"ok": False,
+                "error": f"当前状态 {prev_status} 不可提交（仅 {'/'.join(SUBMITTABLE_STATES)} 可提交）"}
+    # CAS：状态原子的 可提交状态 -> UPDATING，防批量+手动/双击并发提交出双作业
     n = (db.query(Job)
-         .filter(Job.id == job.id, Job.status == prev_status)
+         .filter(Job.id == job.id, Job.status.in_(SUBMITTABLE_STATES))
          .update({"status": "UPDATING"}, synchronize_session=False))
     db.commit()
     if n != 1:
+        # 会话里的 job.status 是旧值，expire 后重新加载拿真实状态再报
+        db.expire(job)
+        real = db.get(Job, job.id)
+        real_status = real.status if real else "已删除"
         return {"ok": False,
-                "error": f"作业状态已变为 {job.status}（可能正在提交/更新中），请刷新后重试"}
-    db.expire(job)
+                "error": f"作业状态已变为 {real_status}（可能正在提交/更新中），请刷新后重试"}
     db.refresh(job)
 
     def _abort(msg: str, **extra) -> dict:
@@ -172,6 +182,35 @@ def stop(db: Session, job: Job, with_savepoint: bool = True) -> dict:
         return {"ok": False, "error": msg}
 
 
+def delete(db: Session, job: Job) -> dict:
+    """删除作业 = 取消 SeaTunnel 侧作业（如在跑）+ 删除平台记录（单个/批量删除共用）。
+
+    SeaTunnel 没有"删除作业"概念：作业只能 cancel 到终态（FINISHED/CANCELED），
+    终态后只是 master 里的历史记录，不占资源。因此删除流程：
+    在跑 → /stop-job（不带 savepoint）取消；已终态 → 直接删记录。
+    集群不可达时拒绝删除——查不到状态就静默删库会留下孤儿作业继续双写。
+    """
+    note = ""
+    if job.seatunnel_job_id:
+        try:
+            # 连接级异常：无法确认远端状态，拒绝删除；查不到作业按已终态处理
+            info = st.get(db, job.env, f"/job-info/{job.seatunnel_job_id}")
+            if info and str(info.get("jobStatus", "")).upper() == "RUNNING":
+                st.post(db, job.env, "/stop-job",
+                        json={"jobId": int(job.seatunnel_job_id), "isStopWithSavePoint": False})
+                note = f"SeaTunnel 侧运行中作业已取消（jobId={job.seatunnel_job_id}）"
+            elif info:
+                note = "SeaTunnel 侧已是终态（仅历史记录，无需处理）"
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False,
+                    "error": sanitize_error(f"无法确认/取消 SeaTunnel 侧作业（集群不可达），未删除: {e}")}
+    # 级联清理指标样本（versions/events 由 ORM cascade 处理，MetricSample 不在 relationship 里）
+    db.query(MetricSample).filter(MetricSample.job_id == job.id).delete()
+    db.delete(job)
+    db.commit()
+    return {"ok": True, "note": note}
+
+
 def update_and_restart(db: Session, job: Job, note: str = "") -> dict:
     """更新编排：防重复检查 -> 表结构预检 -> stop(savepoint) -> 等终态 -> DDL 演进 -> 渲染留档 -> 重启，失败回滚。
 
@@ -215,9 +254,12 @@ def update_and_restart(db: Session, job: Job, note: str = "") -> dict:
          .update({"status": "UPDATING"}, synchronize_session=False))
     db.commit()
     if n != 1:
+        # 会话里的 job.status 是旧值，expire 后重新加载拿真实状态再报
+        db.expire(job)
+        real = db.get(Job, job.id)
+        real_status = real.status if real else "已删除"
         return {"ok": False, "stage": "precheck",
-                "error": f"作业状态已变为 {job.status}（可能正在提交/更新中），请刷新后重试"}
-    db.expire(job)
+                "error": f"作业状态已变为 {real_status}（可能正在提交/更新中），请刷新后重试"}
     db.refresh(job)
     _event(db, job, "update", f"开始更新并重启: {note}")
     db.add(job)
