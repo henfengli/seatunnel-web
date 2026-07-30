@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 from .core.config import BASE_DIR
 from .core.crypto import decrypt_safe
 from .core.db import SessionLocal
+from .core.fmt import human_bytes
 from .services import envs
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates" / "pages"))
@@ -38,19 +39,6 @@ def _ds_addr(ds) -> str:
     return f"{host}:{port}" if port else host
 
 
-def _human_bytes(n) -> str:
-    """字节量人性化展示。"""
-    try:
-        n = float(n or 0)
-    except (TypeError, ValueError):
-        return "-"
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.1f}{unit}" if unit != "B" else f"{int(n)}B"
-        n /= 1024
-    return f"{n:.1f}TB"
-
-
 _CONF_SECRET_LINE = re.compile(
     r'(?m)^(\s*(?:[\w.\-]*password[\w.\-]*|sasl\.jaas\.config)\s*=\s*)".*"(;?)\s*$',
     re.IGNORECASE)
@@ -67,7 +55,7 @@ def _mask_conf(text: str) -> str:
 
 templates.env.filters["dt"] = _fmt_dt
 templates.env.filters["ds_addr"] = _ds_addr
-templates.env.filters["human_bytes"] = _human_bytes
+templates.env.filters["human_bytes"] = human_bytes
 templates.env.filters["mask_conf"] = _mask_conf
 # 解密（conf 加密落库后的展示还原；历史明文行兼容）
 templates.env.filters["dec"] = decrypt_safe
@@ -89,9 +77,16 @@ def _all_env_names() -> list[str]:
 templates.env.globals["all_env_names"] = _all_env_names
 
 
+# flash 消息上限：走 query 参数/HX-Redirect 头，中文 URL 编码后 9 字节/字，
+# 不截断的话 Doris 长错误能把 URL/响应头撑爆
+_FLASH_MAX = 300
+
+
 def goto(request: Request, url: str, msg: str | None = None, ok: bool = True) -> Response:
-    """统一跳转：带 flash 消息（query 参数）；htmx 请求用 HX-Redirect 头。"""
+    """统一跳转：带 flash 消息（query 参数，超长截断）；htmx 请求用 HX-Redirect 头。"""
     if msg:
+        if len(msg) > _FLASH_MAX:
+            msg = msg[:_FLASH_MAX] + "…"
         sep = "&" if "?" in url else "?"
         url = url + sep + urlencode({"msg": msg, "msg_type": "success" if ok else "error"})
     if request.headers.get("HX-Request"):
