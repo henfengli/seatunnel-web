@@ -1,0 +1,4 @@
+{# 测试连接结果片段（htmx 内联返回，不跳转）。results: [(ok, msg, label)] #}
+{% for ok, msg, label in results %}
+<div class="{{ 'test-ok' if ok else 'test-fail' }}">{{ '✓' if ok else '✗' }}{% if label %} {{ label }}:{% endif %} {{ msg }}</div>
+{% endfor %}

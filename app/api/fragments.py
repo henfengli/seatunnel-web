@@ -1,16 +1,16 @@
-"""JSON/htmx 辅助路由：作业向导的联动下拉与字段映射预览（全部返回 HTML 片段）。
+"""htmx 联动片段路由：作业向导的联动下拉、字段映射预览、监控数据（/api 前缀）。
 
-说明：除规范中的 /api/datasources/{id}/objects、/api/protos/{id}/messages 外，
-另提供 query 参数版本（/api/datasources/objects、/api/protos/messages），
-因为 htmx 的 hx-get URL 无法随下拉选中值动态变化，统一由它们代理到同一渲染逻辑。
+绝大多数端点返回 HTML 片段（hx-get 局部替换）；metrics-series / env-series 返回
+JSON（Chart.js 数据源）。带路径参数的端点用于 hx-get 的 URL 模板（如 /datasources/{id}/tables），
+query 参数端点用于 hx-include 联动（URL 无法随选中值变化，参数随表单带上来）。
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 
-from ..core.config import get_settings
+from ..core.crypto import sanitize_error
 from ..core.db import get_db
 from ..models import Datasource, Job, JobEvent, ProtoPackage
 from ..services import doris_ddl, envs, monitor, proto_center
@@ -31,7 +31,7 @@ def _to_int(raw, default: int = 0) -> int:
 # ---------------------------------------------------------------- 数据源下拉
 
 @router.get("/datasources/options", response_class=HTMLResponse)
-def datasource_options(request: Request, env: str = "", type: str = "",
+def datasource_options(request: Request, env: str = "", ds_type: str = Query("", alias="type"),
                        source_type: str = "", target_env: str = "",
                        field_name: str = "datasource_id", with_objects: str = "1",
                        batch: str = "",
@@ -43,16 +43,16 @@ def datasource_options(request: Request, env: str = "", type: str = "",
     batch=1 时选中联动到批量建作业的对象多选列表。
     """
     env = env or target_env
-    type = type or source_type
+    ds_type = ds_type or source_type
     options = []
-    if env and type:
+    if env and ds_type:
         options = (
             db.query(Datasource)
-            .filter(Datasource.env == env, Datasource.type == type)
+            .filter(Datasource.env == env, Datasource.type == ds_type)
             .order_by(Datasource.name).all()
         )
     return templates.TemplateResponse(request, "_ds_options.html", {
-        "options": options, "env": env, "type": type,
+        "options": options, "env": env, "type": ds_type,
         "field_name": field_name, "with_objects": with_objects == "1",
         "batch": batch == "1",
     })
@@ -131,16 +131,10 @@ def _dbs_response(request: Request, db: Session, ds_id: int) -> HTMLResponse:
 
 
 @router.get("/datasources/objects", response_class=HTMLResponse)
-def datasource_objects_qs(request: Request, datasource_id: str = "",
-                          db: Session = Depends(get_db)):
-    """htmx 联动用（query 参数版本）。"""
+def datasource_objects(request: Request, datasource_id: str = "",
+                       db: Session = Depends(get_db)):
+    """源对象选择片段（htmx 联动，参数随 hx-include 带上来）。"""
     return _objects_response(request, db, _to_int(datasource_id))
-
-
-@router.get("/datasources/{ds_id}/objects", response_class=HTMLResponse)
-def datasource_objects(request: Request, ds_id: int, db: Session = Depends(get_db)):
-    """源对象列表（规范路径版本）。"""
-    return _objects_response(request, db, ds_id)
 
 
 @router.get("/datasources/batch-objects", response_class=HTMLResponse)
@@ -156,21 +150,15 @@ def datasource_batch_objects(request: Request, datasource_id: str = "",
     })
 
 
-@router.get("/datasources/{ds_id}/dbs", response_class=HTMLResponse)
-def datasource_dbs(request: Request, ds_id: int, db: Session = Depends(get_db)):
-    """库/schema 下拉片段（两级级联第一级）。"""
-    return _dbs_response(request, db, ds_id)
-
-
 @router.get("/datasources/{ds_id}/tables", response_class=HTMLResponse)
-def datasource_tables(request: Request, ds_id: int, db: str = "",
-                      db_sess: Session = Depends(get_db)):
+def datasource_tables(request: Request, ds_id: int, db_name: str = Query("", alias="db"),
+                      db: Session = Depends(get_db)):
     """表/集合下拉片段（两级级联第二级）；option 值即 source_ref（库.表）。"""
-    ds = db_sess.get(Datasource, ds_id)
+    ds = db.get(Datasource, ds_id)
     if not ds:
         return HTMLResponse('<div class="alert alert-error">数据源不存在</div>')
     return templates.TemplateResponse(request, "_source_tables.html", {
-        "ds": ds, "db_name": db, "tables": _source_tables(ds, db),
+        "ds": ds, "db_name": db_name, "tables": _source_tables(ds, db_name),
     })
 
 
@@ -190,23 +178,14 @@ def _doris_dbs_response(request: Request, db: Session, env_name: str) -> HTMLRes
 
 
 @router.get("/envs/doris-dbs", response_class=HTMLResponse)
-def env_doris_dbs_qs(request: Request, env: str = "", db: Session = Depends(get_db)):
-    """htmx 联动用（query 参数版本）。"""
+def env_doris_dbs(request: Request, env: str = "", db: Session = Depends(get_db)):
+    """环境 Doris 库列表片段（htmx 联动）。"""
     return _doris_dbs_response(request, db, env)
 
 
-@router.get("/envs/{name}/doris-dbs", response_class=HTMLResponse)
-def env_doris_dbs(request: Request, name: str, db: Session = Depends(get_db)):
-    """环境 Doris 库列表（规范路径版本）。"""
-    return _doris_dbs_response(request, db, name)
-
-
-def _doris_tables_options(db: Session, env_name: str, db_name: str) -> HTMLResponse:
+def _doris_tables_options(request: Request, db: Session, env_name: str,
+                          db_name: str) -> HTMLResponse:
     """目标表 datalist 片段（含 datalist 本体，整块替换）；失败时透出错误原因。"""
-    from html import escape
-
-    from ..core.crypto import sanitize_error
-
     tables: list[str] = []
     error = None
     try:
@@ -214,25 +193,16 @@ def _doris_tables_options(db: Session, env_name: str, db_name: str) -> HTMLRespo
             tables = doris_ddl.list_doris_tables(envs.get_env(db, env_name), db_name)
     except Exception as e:  # noqa: BLE001 - 库名非法/不可达/权限等，透出到页面
         error = sanitize_error(str(e))[:200]
-    html = '<datalist id="doris-table-list">' + "".join(
-        f'<option value="{t}">' for t in tables) + "</datalist>"
-    if error:
-        html += f'<div class="hint test-fail">表列表查询失败: {escape(error)}</div>'
-    return HTMLResponse(html)
+    return templates.TemplateResponse(request, "_doris_tables.html", {
+        "tables": tables, "error": error,
+    })
 
 
 @router.get("/envs/doris-tables", response_class=HTMLResponse)
-def env_doris_tables_qs(request: Request, env: str = "", db: str = "",
-                        db_sess: Session = Depends(get_db)):
-    """htmx 联动用（query 参数版本，db 为目标库名）。"""
-    return _doris_tables_options(db_sess, env, db)
-
-
-@router.get("/envs/{name}/doris-tables", response_class=HTMLResponse)
-def env_doris_tables(request: Request, name: str, db: str = "",
-                     db_sess: Session = Depends(get_db)):
-    """环境 Doris 表列表（规范路径版本，?db=库名）。"""
-    return _doris_tables_options(db_sess, name, db)
+def env_doris_tables(request: Request, env: str = "", db_name: str = Query("", alias="db"),
+                     db: Session = Depends(get_db)):
+    """环境 Doris 表 datalist 片段（htmx 联动，db 为目标库名）。"""
+    return _doris_tables_options(request, db, env, db_name)
 
 
 # ---------------------------------------------------------------- 监控数据（JSON / 片段）
@@ -277,16 +247,14 @@ def env_series_ep(env: str = "", hours: int = 24, db: Session = Depends(get_db))
 # ---------------------------------------------------------------- proto 包下拉
 
 @router.get("/protos/options", response_class=HTMLResponse)
-def proto_options(db: Session = Depends(get_db)):
+def proto_options(request: Request, db: Session = Depends(get_db)):
     """proto 包 <option> 列表（填充进 select 的 innerHTML）。"""
     pkgs = (
         db.query(ProtoPackage)
         .filter(ProtoPackage.status != "error")
         .order_by(ProtoPackage.name).all()
     )
-    opts = ['<option value="">请选择 proto 包</option>']
-    opts += [f'<option value="{p.id}">{p.name}</option>' for p in pkgs]
-    return HTMLResponse("".join(opts))
+    return templates.TemplateResponse(request, "_proto_options.html", {"pkgs": pkgs})
 
 
 def _messages_response(request: Request, db: Session, pkg_id: int,
@@ -301,16 +269,10 @@ def _messages_response(request: Request, db: Session, pkg_id: int,
 
 
 @router.get("/protos/messages", response_class=HTMLResponse)
-def proto_messages_qs(request: Request, proto_package_id: str = "", batch: str = "",
-                      db: Session = Depends(get_db)):
-    """htmx 联动用（query 参数版本）。"""
+def proto_messages(request: Request, proto_package_id: str = "", batch: str = "",
+                   db: Session = Depends(get_db)):
+    """message 下拉片段（htmx 联动）。"""
     return _messages_response(request, db, _to_int(proto_package_id), batch == "1")
-
-
-@router.get("/protos/{pkg_id}/messages", response_class=HTMLResponse)
-def proto_messages(request: Request, pkg_id: int, db: Session = Depends(get_db)):
-    """message 列表（规范路径版本）。"""
-    return _messages_response(request, db, pkg_id)
 
 
 # ---------------------------------------------------------------- 字段映射预览

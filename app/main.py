@@ -10,12 +10,14 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
-from .api import json_api, pages
+from .api import fragments, pages
 from .core.config import BASE_DIR, get_settings
 from .core.db import SessionLocal, init_db
 from .models import BatchItem, BatchTask
 from .services import envs, watchdog
 
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 # APScheduler 每 15 秒一条任务执行日志太吵，只看 WARNING 及以上
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
@@ -52,7 +54,7 @@ app = FastAPI(title="SeaTunnel 作业管理平台", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
 
 app.include_router(pages.router)
-app.include_router(json_api.router)
+app.include_router(fragments.router)
 
 
 @app.get("/favicon.ico", include_in_schema=False)
