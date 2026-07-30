@@ -9,10 +9,11 @@ from typing import Any
 import yaml
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # 项目根（seatunnel-web/）
-DATA_DIR = BASE_DIR / "data"
+# VISION_DATA_DIR 可覆盖数据目录（测试用 tmp 目录，避免污染开发库）
+DATA_DIR = Path(os.environ.get("VISION_DATA_DIR", BASE_DIR / "data"))
 ENV_YAML = Path(os.environ.get("VISION_ENV_YAML", BASE_DIR / "environments.yaml"))
 
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class Settings:

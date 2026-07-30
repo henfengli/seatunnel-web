@@ -50,6 +50,39 @@ def mask(plain: str) -> str:
     return plain[:2] + "****" + plain[-2:]
 
 
+_SECRET_KEY = re.compile(r"password|auth", re.IGNORECASE)
+
+
+def decrypt_conn(conn: dict) -> dict:
+    """connection dict 中敏感字段（key 含 password/auth）解密后返回新 dict；非密文按原文。
+
+    数据源/环境连接信息统一走这里解密，各服务层不要再自己实现。
+    """
+    out = {}
+    for k, v in conn.items():
+        if isinstance(v, str) and v and _SECRET_KEY.search(k):
+            try:
+                v = decrypt(v)
+            except Exception:  # noqa: BLE001 - 历史明文按原文使用
+                pass
+        out[k] = v
+    return out
+
+
+def mask_conn(conn: dict) -> dict:
+    """connection dict 展示版：密码字段解密后掩码（绝不回传明文/密文）。"""
+    out = {}
+    for k, v in conn.items():
+        if isinstance(v, str) and v and "password" in k.lower():
+            try:
+                out[k] = mask(decrypt(v)) or "(空)"
+            except Exception:  # noqa: BLE001
+                out[k] = "****"
+        else:
+            out[k] = v
+    return out
+
+
 _URI_PWD = re.compile(r"(://[^:/\s]+):[^@\s]+@")
 
 

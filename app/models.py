@@ -1,14 +1,16 @@
-"""SQLAlchemy 模型 —— 对应方案设计 §2 核心概念模型。"""
+"""SQLAlchemy 模型 —— 对应方案设计 §2 核心概念模型。
+
+JSON 文本列统一用 JsonDict（core/db.py）：Python 侧直接读写 dict/list，
+数据库列名保持 *_json 不变，已有库无需迁移。
+"""
 from __future__ import annotations
 
-import json
 from datetime import datetime
-from typing import Any
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .core.db import Base
+from .core.db import Base, JsonDict
 
 DS_TYPES = ("kafka", "mongodb", "postgresql", "doris")
 
@@ -26,20 +28,12 @@ def _now() -> datetime:
     return datetime.now()
 
 
-class JsonMixin:
-    @staticmethod
-    def _loads(raw: str | None) -> Any:
-        return json.loads(raw) if raw else None
-
-    @staticmethod
-    def _dumps(obj: Any) -> str:
-        return json.dumps(obj, ensure_ascii=False)
-
-
 class Environment(Base):
     """逻辑环境：SeaTunnel master 列表 + Doris 连接 + 可选 proto 站点（Web 可维护）。
 
     环境表为空时由 environments.yaml 一次性种子导入，之后全部在 Web 上管理。
+    注意：Datasource.env / Job.env 是对 name 的弱引用（非外键），
+    改名/删除必须走 Web 层的引用检查，不要直接操作 DB。
     """
     __tablename__ = "environments"
 
@@ -60,7 +54,7 @@ class Environment(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 
-class Datasource(Base, JsonMixin):
+class Datasource(Base):
     __tablename__ = "datasources"
     __table_args__ = (UniqueConstraint("env", "name", name="uq_ds_env_name"),)
 
@@ -68,8 +62,8 @@ class Datasource(Base, JsonMixin):
     env: Mapped[str] = mapped_column(String(32), index=True)
     name: Mapped[str] = mapped_column(String(128))
     type: Mapped[str] = mapped_column(String(16))          # kafka/mongodb/postgresql/doris
-    connection_json: Mapped[str] = mapped_column(Text, default="{}")  # 密码字段已加密
-    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connection: Mapped[dict] = mapped_column("connection_json", JsonDict(dict), default=dict)  # 密码字段已加密
+    metadata_dict: Mapped[dict] = mapped_column("metadata_json", JsonDict(dict), nullable=True)  # 元数据缓存（topics/库表字段）
     metadata_status: Mapped[str] = mapped_column(String(16), default="pending")  # ok/expired/error/pending
     metadata_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -80,17 +74,8 @@ class Datasource(Base, JsonMixin):
 
     jobs: Mapped[list["Job"]] = relationship(back_populates="datasource")
 
-    @property
-    def connection(self) -> dict:
-        return self._loads(self.connection_json) or {}
 
-    @property
-    def metadata_dict(self) -> dict | None:
-        """元数据缓存（topics/库表字段）。注意不能命名为 metadata（SQLAlchemy 保留名）。"""
-        return self._loads(self.metadata_json)
-
-
-class ProtoPackage(Base, JsonMixin):
+class ProtoPackage(Base):
     __tablename__ = "proto_packages"
     __table_args__ = (UniqueConstraint("name", name="uq_proto_name"),)
 
@@ -102,10 +87,10 @@ class ProtoPackage(Base, JsonMixin):
     poll_interval_sec: Mapped[int] = mapped_column(Integer, default=3600)
     current_version: Mapped[str | None] = mapped_column(String(64), nullable=True)  # etag/版本号
     content: Mapped[str | None] = mapped_column(Text, nullable=True)                # 当前 .proto 原文
-    parsed_json: Mapped[str | None] = mapped_column(Text, nullable=True)            # 解析产物（字段树）
+    parsed: Mapped[dict] = mapped_column("parsed_json", JsonDict(dict), nullable=True)      # 解析产物（字段树）
     prev_content: Mapped[str | None] = mapped_column(Text, nullable=True)           # 上一版（用于回滚/diff）
-    prev_parsed_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    diff_json: Mapped[str | None] = mapped_column(Text, nullable=True)              # 最近一次的 diff
+    prev_parsed: Mapped[dict] = mapped_column("prev_parsed_json", JsonDict(dict), nullable=True)
+    diff: Mapped[dict] = mapped_column("diff_json", JsonDict(dict), nullable=True)          # 最近一次的 diff
     status: Mapped[str] = mapped_column(String(16), default="pending")  # current/updated/error/pending
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -115,17 +100,12 @@ class ProtoPackage(Base, JsonMixin):
     jobs: Mapped[list["Job"]] = relationship(back_populates="proto_package")
 
     @property
-    def parsed(self) -> dict | None:
-        """解析产物结构: {"messages": {msg_name: field_tree}, "top_level": [names]}"""
-        return self._loads(self.parsed_json)
-
-    @property
     def top_level_messages(self) -> list[str]:
-        p = self.parsed or {}
-        return p.get("top_level", [])
+        """parsed 结构: {"messages": {msg_name: field_tree}, "top_level": [names]}"""
+        return (self.parsed or {}).get("top_level", [])
 
 
-class Job(Base, JsonMixin):
+class Job(Base):
     __tablename__ = "jobs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -140,12 +120,13 @@ class Job(Base, JsonMixin):
     doris_table: Mapped[str] = mapped_column(String(128))
     proto_package_id: Mapped[int | None] = mapped_column(ForeignKey("proto_packages.id"), nullable=True)
     message_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    field_mapping_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # [{source,st_type,doris_col,doris_type,nested}]
+    # [{source, st_type, doris_col, doris_type, nested, ...}]
+    field_mapping: Mapped[list] = mapped_column("field_mapping_json", JsonDict(list), nullable=True)
     seatunnel_conf: Mapped[str | None] = mapped_column(Text, nullable=True)      # 当前渲染产物
     seatunnel_job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
     status_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    options_json: Mapped[str] = mapped_column(Text, default="{}")  # parallelism/checkpoint/批大小等
+    options: Mapped[dict] = mapped_column("options_json", JsonDict(dict), default=dict)  # parallelism/checkpoint/批大小等
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -159,19 +140,11 @@ class Job(Base, JsonMixin):
     )
 
     @property
-    def field_mapping(self) -> list[dict]:
-        return self._loads(self.field_mapping_json) or []
-
-    @property
-    def options(self) -> dict:
-        return self._loads(self.options_json) or {}
-
-    @property
     def tag_list(self) -> list[str]:
         return [t.strip() for t in self.tags.split(",") if t.strip()]
 
 
-class JobVersion(Base, JsonMixin):
+class JobVersion(Base):
     """配置即代码：每次提交的 conf 快照全留档。"""
     __tablename__ = "job_versions"
     __table_args__ = (UniqueConstraint("job_id", "version", name="uq_job_ver"),)
@@ -180,7 +153,7 @@ class JobVersion(Base, JsonMixin):
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"))
     version: Mapped[int] = mapped_column(Integer)
     conf: Mapped[str] = mapped_column(Text)
-    field_mapping_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    field_mapping: Mapped[list] = mapped_column("field_mapping_json", JsonDict(list), nullable=True)
     ddl: Mapped[str | None] = mapped_column(Text, nullable=True)     # 本次执行的建表/加列语句
     proto_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     note: Mapped[str] = mapped_column(String(256), default="")
@@ -216,7 +189,7 @@ class MetricSample(Base):
     ts: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
 
 
-class BatchTask(Base, JsonMixin):
+class BatchTask(Base):
     """批量操作任务：后台线程串行执行，页面轮询进度。"""
     __tablename__ = "batch_tasks"
 
@@ -226,7 +199,7 @@ class BatchTask(Base, JsonMixin):
     total: Mapped[int] = mapped_column(Integer, default=0)
     done: Mapped[int] = mapped_column(Integer, default=0)
     ok_count: Mapped[int] = mapped_column(Integer, default=0)
-    params_json: Mapped[str] = mapped_column(Text, default="{}")  # options 批改字段/标签/是否重启
+    params: Mapped[dict] = mapped_column("params_json", JsonDict(dict), default=dict)  # options 批改字段/标签/是否重启
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -234,18 +207,17 @@ class BatchTask(Base, JsonMixin):
         back_populates="task", order_by="BatchItem.id", cascade="all, delete-orphan"
     )
 
-    @property
-    def params(self) -> dict:
-        return self._loads(self.params_json) or {}
-
 
 class BatchItem(Base):
-    """批量任务逐条结果：status = PENDING/RUNNING/OK/SKIPPED/FAILED。"""
+    """批量任务逐条结果：status = PENDING/RUNNING/OK/SKIPPED/FAILED。
+
+    job_id 是弱引用（非外键）：作业删除后保留原 id 仅作历史记录。
+    """
     __tablename__ = "batch_items"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     batch_id: Mapped[int] = mapped_column(ForeignKey("batch_tasks.id"), index=True)
-    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # delete 后置空语义，仅作记录
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     job_name: Mapped[str] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
