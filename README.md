@@ -63,32 +63,39 @@ python -m app.main
 
 ## 验证
 
-仓库根目录有五个自带测试（不依赖外部服务）：
+测试用 pytest 组织在 `tests/` 下（不依赖外部服务，SeaTunnel/Doris 均为 mock，
+数据目录隔离在临时目录，不会碰 `data/`）：
 
 ```bash
-python smoke_test.py     # proto 解析 / 字段映射 / conf 渲染管线 / SASL 模板输出 / DDL 生成
-python orch_test.py      # 提交编排全流程（mock SeaTunnel REST）
-python batch_test.py     # 批量建作业 + 批量操作（路由级，mock SeaTunnel REST）
-python recreate_test.py  # 表结构兼容检查 / 数据迁移重建 / 提交更新预检（模拟 Doris + mock SeaTunnel）
-python pages_test.py     # 全页面路由渲染验证（30 个 GET 路由）
+pip install -r requirements-dev.txt
+python -m pytest tests/ -q
 ```
+
+- `test_smoke.py`：proto 解析 / 字段映射 / conf 渲染管线 / SASL 模板输出 / DDL 生成
+- `test_orch.py`：提交编排全流程（mock SeaTunnel REST）
+- `test_batch.py`：批量建作业 + 批量操作（路由级，mock SeaTunnel REST）
+- `test_recreate.py`：表结构兼容检查 / 数据迁移重建 / 提交更新预检（模拟 Doris + mock SeaTunnel）
+- `test_pages.py`：全页面路由渲染验证（30 个 GET 路由）
 
 ## 目录结构
 
 ```
 app/
-├── api/            # 页面路由 + JSON/htmx 辅助路由
-├── core/           # 全局配置 / SQLite / 加密
-├── services/       # 环境 / proto中心 / 字段映射 / 渲染 / Doris DDL / 元数据发现
-│                   # / 提交编排 / 状态看护 / 连接测试
+├── api/
+│   ├── pages/        # 页面路由（按领域拆 dashboard/env/datasource/proto/job/batch）
+│   └── fragments.py  # htmx 联动片段 + 监控 JSON（/api 前缀）
+├── core/             # 全局配置 / SQLite / 加密
+├── services/         # 环境 / proto中心 / 字段映射 / 渲染 / Doris DDL / 元数据发现
+│                     # / 提交编排 / 状态看护 / 连接测试 / SeaTunnel HTTP 客户端 / 告警
 ├── templates/
-│   ├── conf/       # 各源类型 HOCON Jinja2 模板
-│   └── pages/      # 页面模板
-├── static/         # htmx + 样式（全部本地化）
+│   ├── conf/         # 各源类型 HOCON Jinja2 模板
+│   └── pages/        # 页面模板
+├── static/           # htmx + 样式（全部本地化）
 ├── models.py
 └── main.py
-environments.yaml   # 全局配置（命名规范/看护间隔/告警webhook；环境段仅为首启种子）
-data/               # 运行数据（SQLite / 密钥，首次启动自动生成）
+tests/                # pytest 测试（见上）
+environments.yaml     # 全局配置（命名规范/看护间隔/告警webhook；环境段仅为首启种子）
+data/                 # 运行数据（SQLite / 密钥，首次启动自动生成）
 ```
 
 ## 前置要求
