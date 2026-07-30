@@ -15,7 +15,6 @@ from ...models import Datasource, Environment, Job
 from ...services import envs, health, monitor
 from ...templating import goto, templates
 from .common import _form_dict, form_error
-from .dashboard import status_counts
 
 router = APIRouter()
 
@@ -72,17 +71,17 @@ def _env_form_apply(e: Environment, form) -> str | None:
 
 @router.get("/environments", response_class=HTMLResponse)
 def environment_list(request: Request, db: Session = Depends(get_db)):
-    counts = status_counts(db)
+    counts = envs.job_status_counts(db)
     env_rows = []
     for env in envs.list_envs(db):
-        status, title = health.env_aggregate(env.health_json)
+        status, title = health.env_aggregate(env.health)
         env_rows.append({
             "env": env,
             "masters": [m.split("://")[-1] for m in envs.parse_masters(env.seatunnel_masters)],
             "job_count": sum(counts.get(env.name, {}).values()),
             "health": status,
             "health_title": title,
-            "parts": health.env_health_parts(env.health_json),
+            "parts": health.env_health_parts(env.health),
         })
     return templates.TemplateResponse(request, "environments.html", {
         "active": "environments", "env_rows": env_rows,
@@ -158,7 +157,7 @@ def environment_retest(request: Request, env_id: int, db: Session = Depends(get_
     if not env:
         return goto(request, "/environments", "环境不存在", ok=False)
     health.check_environment(db, env)
-    status, _ = health.env_aggregate(env.health_json)
+    status, _ = health.env_aggregate(env.health)
     ok = status == "ok"
     return goto(request, f"/environments/{env_id}/edit",
                 "连接测试通过" if ok else "连接测试未通过，详见健康状态", ok=ok)
@@ -184,7 +183,7 @@ def environment_edit(request: Request, env_id: int, db: Session = Depends(get_db
         return goto(request, "/environments", "环境不存在", ok=False)
     return templates.TemplateResponse(request, "environment_form.html", {
         "active": "environments", "env": env, "form": {},
-        "health": health.env_aggregate(env.health_json), "error": None,
+        "health": health.env_aggregate(env.health), "error": None,
     })
 
 
@@ -199,7 +198,7 @@ async def environment_update(request: Request, env_id: int, db: Session = Depend
     def _err(msg: str):
         return form_error(request, "environment_form.html", msg,
                           active="environments", env=env, form=_form_dict(form),
-                          health=health.env_aggregate(env.health_json))
+                          health=health.env_aggregate(env.health))
 
     old_name = env.name
     err = _env_form_apply(env, form)

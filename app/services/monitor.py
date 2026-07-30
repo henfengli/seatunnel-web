@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Job, MetricSample
 from ..core.crypto import decrypt_conn, sanitize_error
+from ..core.fmt import human_bytes
 from . import doris_ddl, envs, seatunnel_client as st
 
 _TIMEOUT = 8
@@ -61,15 +62,6 @@ def _parse_size(v) -> int:
     if unit == "":
         unit = "B"
     return int(float(m.group(1)) * _SIZE_UNITS.get(unit, 1))
-
-
-def _human(n: float) -> str:
-    """字节量人性化展示（与 templating.human_bytes 同风格）。"""
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.1f}{unit}" if unit != "B" else f"{int(n)}B"
-        n /= 1024
-    return f"{n:.1f}TB"
 
 
 # ---------------------------------------------------------------- SeaTunnel REST
@@ -348,7 +340,7 @@ def doris_table_stats(db: Session, job: Job) -> dict:
                 cur.execute(f"SHOW DATA FROM `{job.doris_db}`.`{job.doris_table}`")
                 total = sum(_parse_size(r.get("Size", 0)) for r in _rows(cur))
                 result["size_bytes"] = total
-                result["size_human"] = _human(total)
+                result["size_human"] = human_bytes(total)
                 cur.execute(f"SHOW PARTITIONS FROM `{job.doris_db}`.`{job.doris_table}`")
                 result["partitions"] = len(cur.fetchall())
         finally:
@@ -392,7 +384,7 @@ def checkpoint_stats(db: Session, job: Job) -> dict:
         latest = pl.get("latestCompleted") or {}
         if latest:
             result["latestDurationMs"] = _int(latest.get("durationMillis"))
-            result["stateSize"] = _human(_parse_size(latest.get("stateSize", 0)))
+            result["stateSize"] = human_bytes(_parse_size(latest.get("stateSize", 0)))
     except Exception as e:  # noqa: BLE001
         result["error"] = sanitize_error(str(e))[:300]
     return result

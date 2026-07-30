@@ -162,3 +162,9 @@ def test_orchestrator(db):
     # 4b. 第一个作业停止后，第二个可以正常提交
     r = orchestrator.submit(db, job2)
     check("停止后可正常提交", r.get("ok") is True and job2.status == "RUNNING", f"{r}/{job2.status}")
+
+    # 5. 状态白名单：RUNNING 直接拒绝（不进入 UPDATING、不重复提交 SeaTunnel）
+    submits_before = len(STATE["submits"])
+    r = orchestrator.submit(db, job2)
+    check("RUNNING 提交被白名单拒绝", r.get("ok") is False and "不可提交" in r.get("error", ""), str(r))
+    check("拒绝后状态不变、未提交", job2.status == "RUNNING" and len(STATE["submits"]) == submits_before)

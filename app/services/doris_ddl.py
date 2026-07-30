@@ -212,7 +212,7 @@ def _base_type(t: str) -> tuple[str, str]:
     return (m.group(1).upper(), m.group(2) or "") if m else (str(t).upper(), "")
 
 
-def _canon_type(t: str) -> tuple[str, str]:
+def canon_type(t: str) -> tuple[str, str]:
     """MySQL 协议显示名 -> Doris 规范类型名（返回 (基类型, 参数)）。
 
     依据 Doris BE schema_columns_scanner.cpp 的 COLUMN_TYPE 输出规则归一化：
@@ -248,8 +248,8 @@ _TYPE_WIDEN = {
 
 def _type_change_level(old: str, new: str) -> str:
     """现有类型 -> 目标类型：same（一致）/ online（可在线 MODIFY）/ recreate（只能重建）。"""
-    ob, op = _canon_type(old)
-    nb, np_ = _canon_type(new)
+    ob, op = canon_type(old)
+    nb, np_ = canon_type(new)
     if (ob, op) == (nb, np_):
         return "same"
     if ob == nb:

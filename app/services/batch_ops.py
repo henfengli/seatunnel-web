@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 
 from ..core.crypto import sanitize_error
 from ..core.db import SessionLocal
-from ..models import BatchItem, BatchTask, Job, MetricSample
-from . import orchestrator, seatunnel_client as st
+from ..models import BatchItem, BatchTask, Job
+from . import orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -140,26 +140,11 @@ def _apply_one(db: Session, task: BatchTask, item: BatchItem) -> tuple[str, str]
 
 
 def _delete_one(db: Session, job: Job) -> tuple[str, str]:
-    """删除 = 取消 SeaTunnel 侧作业（如在跑）+ 删平台记录（与单作业删除同语义）。
-
-    集群不可达时拒绝删除——查不到状态就静默删库会留下孤儿作业继续双写。
-    """
-    note = ""
-    if job.seatunnel_job_id:
-        try:
-            info = st.get(db, job.env, f"/job-info/{job.seatunnel_job_id}")
-        except Exception as e:  # noqa: BLE001 - 连接级异常：无法确认远端状态，拒绝删除
-            return "FAILED", f"无法确认 SeaTunnel 侧作业状态（集群不可达），未删除: {e}"
-        if info and str(info.get("jobStatus", "")).upper() == "RUNNING":
-            st.post(db, job.env, "/stop-job",
-                  json={"jobId": int(job.seatunnel_job_id), "isStopWithSavePoint": False})
-            note = f"SeaTunnel 侧运行中作业已取消（jobId={job.seatunnel_job_id}）"
-        elif info:
-            note = "SeaTunnel 侧已是终态（仅历史记录）"
-    db.query(MetricSample).filter(MetricSample.job_id == job.id).delete()
-    db.delete(job)
-    db.commit()
-    return "OK", note
+    """批量删除：与单作业删除同一实现（orchestrator.delete），只映射结果形式。"""
+    r = orchestrator.delete(db, job)
+    if not r.get("ok"):
+        return "FAILED", r["error"]
+    return "OK", r.get("note", "")
 
 
 def _options_one(db: Session, task: BatchTask, job: Job) -> tuple[str, str]:

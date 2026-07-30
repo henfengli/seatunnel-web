@@ -108,9 +108,9 @@ def build_mapping(source_type: str, source_columns: list[dict], variant_enabled:
         elif source_type == "doris":
             # COLUMN_TYPE 经 MySQL 协议显示（decimalv3(38,10)/datetime(3)/tinyint(1)），
             # 归一化为规范类型（doris 源 conf 由连接器自行推断 schema，st_type 仅展示用）
-            from .doris_ddl import _canon_type
+            from .doris_ddl import canon_type
 
-            base, params = _canon_type(col.get("type", "string"))
+            base, params = canon_type(col.get("type", "string"))
             doris_type = f"{base}({params})" if params else base
             st_type = doris_type.lower()
         else:

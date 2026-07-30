@@ -40,6 +40,8 @@ watchdog:
 
 留空 `alert_webhook` 则关闭告警（只记日志）。
 
+> 注意：`environments.yaml` 只在启动时读取，改完需重启进程生效（环境本身在 Web 上维护，改的是 DB，不受此限）。
+
 ## 部署
 
 ```bash
@@ -102,5 +104,5 @@ data/                 # 运行数据（SQLite / 密钥，首次启动自动生�
 
 - SeaTunnel Zeta 集群已开启 REST API（`seatunnel.yaml` 的 `engine.http`，默认 8080）
 - 若使用 Kafka protobuf 嵌套结构（`array<{...}>`），SeaTunnel 需打入 protobuf 补丁
-  （见项目根目录 `scripts/patch-protobuf-fix.sh` 与 `protobuf解析修复-审核后.md`）
+  （补丁脚本与审核记录未随仓库分发，找维护者索取）
 - Doris 账号需有建库建表权限（自动建表/加列用）
