@@ -1,11 +1,10 @@
 """连接健康测试：保存时自动测一次（失败不阻塞保存），也可从表单/详情页手动触发。
 
-结果落 Datasource.health_status/health_detail、Environment.health_json，
+结果落 Datasource.health_status/health_detail、Environment.health，
 列表页以圆点展示（ok 绿 / fail 红 / unknown 灰）。
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -161,7 +160,7 @@ def check_datasource(db: Session, ds: Datasource) -> None:
 
 
 def check_environment(db: Session, env: Environment) -> None:
-    """测一次并写入 health_json；不抛异常。"""
+    """测一次并写入 health；不抛异常。"""
     from . import envs
 
     try:
@@ -177,17 +176,14 @@ def check_environment(db: Session, env: Environment) -> None:
             "doris": {"ok": False, "msg": sanitize_error(str(e))[:300]},
             "checked_at": datetime.now().isoformat(timespec="seconds"),
         }
-    env.health_json = json.dumps(payload, ensure_ascii=False)
+    env.health = payload
     db.add(env)
     db.commit()
 
 
-def env_aggregate(health_json: str | None) -> tuple[str, str]:
+def env_aggregate(health: dict | None) -> tuple[str, str]:
     """环境健康聚合：任一 fail -> fail，全 ok -> ok，未测 -> unknown；返回 (status, title 多行文本)。"""
-    try:
-        data = json.loads(health_json) if health_json else None
-    except ValueError:
-        data = None
+    data = health or None
     if not data:
         return "unknown", "未测试"
     status = "ok"
@@ -203,15 +199,12 @@ def env_aggregate(health_json: str | None) -> tuple[str, str]:
     return status, "\n".join(lines)
 
 
-def env_health_parts(health_json: str | None) -> dict:
+def env_health_parts(health: dict | None) -> dict:
     """拆分 SeaTunnel/Doris 各自的健康状态：{"seatunnel": (status, msg), "doris": (status, msg)}。
 
     status = ok/fail/unknown（对应列表页圆点样式）。
     """
-    try:
-        data = json.loads(health_json) if health_json else None
-    except ValueError:
-        data = None
+    data = health or None
     parts = {}
     for key in ("seatunnel", "doris"):
         if not data or key not in data:

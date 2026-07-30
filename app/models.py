@@ -49,7 +49,7 @@ class Environment(Base):
     replication_num: Mapped[int] = mapped_column(Integer, default=1)  # 单机 Doris 为 1；生产集群手动改 3
     proto_site_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     proto_site_auth: Mapped[str | None] = mapped_column(Text, nullable=True)  # 加密存储
-    health_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # 最近连接测试结果（seatunnel/doris + checked_at）
+    health: Mapped[dict | None] = mapped_column("health_json", JsonDict(dict), nullable=True)  # 最近连接测试结果（seatunnel/doris + checked_at）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
