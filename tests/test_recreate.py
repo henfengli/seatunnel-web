@@ -3,6 +3,7 @@
 import json
 import re
 import threading
+from datetime import datetime as _dt
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -15,24 +16,91 @@ from .conftest import check
 
 
 
-def test_doris_ddl():
-    SHOW_CREATE_UNIQUE = """CREATE TABLE `t_u` (
-      `id` BIGINT,
-      `ts` DATETIMEV2(3),
-      `v` VARCHAR(100)
-    ) ENGINE=OLAP
-    UNIQUE KEY(`id`, `ts`)
-    PARTITION BY RANGE(`ts`)()
-    DISTRIBUTED BY HASH(`id`) BUCKETS 4
-    PROPERTIES (
-    "replication_num" = "1",
-    "dynamic_partition.enable" = "true",
-    "dynamic_partition.time_unit" = "DAY",
-    "dynamic_partition.start" = "-7",
-    "dynamic_partition.end" = "3",
-    "dynamic_partition.prefix" = "p"
-    );"""
 
+# ---------------- 常量与 Fake ----------------
+SHOW_CREATE_UNIQUE = """CREATE TABLE `t_u` (
+  `id` BIGINT,
+  `ts` DATETIMEV2(3),
+  `v` VARCHAR(100)
+) ENGINE=OLAP
+UNIQUE KEY(`id`, `ts`)
+PARTITION BY RANGE(`ts`)()
+DISTRIBUTED BY HASH(`id`) BUCKETS 4
+PROPERTIES (
+"replication_num" = "1",
+"dynamic_partition.enable" = "true",
+"dynamic_partition.time_unit" = "DAY",
+"dynamic_partition.start" = "-7",
+"dynamic_partition.end" = "3",
+"dynamic_partition.prefix" = "p"
+);"""
+
+
+MAPPING = [
+    {"source": "id", "st_type": "bigint", "doris_col": "id", "doris_type": "BIGINT",
+     "nested": False, "is_key": True},
+    {"source": "ts", "st_type": "timestamp", "doris_col": "ts", "doris_type": "DATETIMEV2(3)",
+     "nested": False, "is_key": True},
+    {"source": "v", "st_type": "string", "doris_col": "v", "doris_type": "STRING", "nested": False},
+]
+TTL = {"num": 7, "unit": "DAY", "column": "ts"}
+OLD_COLS = {"id": "BIGINT", "ts": "DATETIMEV2(3)", "v": "STRING", "legacy": "STRING"}
+
+
+class FakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self._rows = []
+
+    def execute(self, sql, args=None):
+        self.conn.execs.append(sql)
+        if "COLUMN_DEFAULT" in sql:
+            self._rows = list(getattr(self.conn, "default_rows", []))
+        elif "information_schema.columns" in sql:
+            self._rows = list(self.conn.col_rows)
+        elif sql.startswith("SHOW CREATE TABLE"):
+            self._rows = [("t", self.conn.show_create)]
+        elif sql.startswith("SELECT DISTINCT date_trunc"):
+            self._rows = list(self.conn.trunc_rows)
+        elif sql.startswith("SELECT COUNT(*)"):
+            self._rows = [(self.conn.counts.pop(0),)]
+        else:
+            self._rows = []
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class FakeConn:
+    def __init__(self, col_rows=(), show_create="", counts=(0, 0), trunc_rows=()):
+        self.execs = []
+        self.col_rows = col_rows
+        self.show_create = show_create
+        self.counts = list(counts)
+        self.trunc_rows = list(trunc_rows)
+
+    def cursor(self):
+        return FakeCursor(self)
+
+    def close(self):
+        pass
+
+
+DORIS = {"fenodes": "fake:8030", "query_port": 9030, "username": "root", "password": "",
+         "variant_enabled": True, "default_buckets": 4, "replication_num": 1}
+
+
+# ---------------- 解析与变更级别 ----------------
+def test_parse_show_create():
     # 1. SHOW CREATE 解析
     sc = doris_ddl._parse_show_create(SHOW_CREATE_UNIQUE)
     check("解析模型/key", sc["model"] == "UNIQUE" and sc["key_cols"] == ["id", "ts"], str(sc))
@@ -41,6 +109,9 @@ def test_doris_ddl():
                             "create_history": False, "history_num": None}
           and sc["buckets"] == 4, str(sc))
 
+
+
+def test_type_change_level():
     # 2. 类型变更分级
     check("同型 same", doris_ddl._type_change_level("BIGINT", "BIGINT") == "same")
     check("INT->BIGINT online", doris_ddl._type_change_level("INT", "BIGINT") == "online")
@@ -78,7 +149,7 @@ def test_doris_ddl():
         "hll": "HLL", "bitmap": "BITMAP", "ipv4": "IPV4", "ipv6": "IPV6",
     }
     for raw, expect in SCAN_TO_CANON.items():
-        _b, _p = doris_ddl._canon_type(raw)
+        _b, _p = doris_ddl.canon_type(raw)
         got = f"{_b}({_p})" if _p else _b
         check(f"归一化 {raw}", got == expect, f"{got} != {expect}")
     check("DATETIME(3)≡DATETIMEV2(3)", doris_ddl._type_change_level("DATETIME(3)", "DATETIMEV2(3)") == "same")
@@ -86,16 +157,10 @@ def test_doris_ddl():
     check("DATETIME≡DATETIMEV2(0)", doris_ddl._type_change_level("DATETIME", "DATETIMEV2(0)") == "same")
     check("精度不同仍 recreate", doris_ddl._type_change_level("DATETIME", "DATETIMEV2(3)") == "recreate")
 
-    MAPPING = [
-        {"source": "id", "st_type": "bigint", "doris_col": "id", "doris_type": "BIGINT",
-         "nested": False, "is_key": True},
-        {"source": "ts", "st_type": "timestamp", "doris_col": "ts", "doris_type": "DATETIMEV2(3)",
-         "nested": False, "is_key": True},
-        {"source": "v", "st_type": "string", "doris_col": "v", "doris_type": "STRING", "nested": False},
-    ]
-    TTL = {"num": 7, "unit": "DAY", "column": "ts"}
-    OLD_COLS = {"id": "BIGINT", "ts": "DATETIMEV2(3)", "v": "STRING", "legacy": "STRING"}
 
+
+def test_compat_decision():
+    sc = doris_ddl._parse_show_create(SHOW_CREATE_UNIQUE)
     # 3. compat_decision 分级
     r = doris_ddl.compat_decision(None, None, MAPPING, TTL, "UNIQUE", 4)
     check("表不存在 level=none", r["level"] == "none")
@@ -155,14 +220,19 @@ def test_doris_ddl():
     check("TEXT 表 vs STRING 映射不误判、无 online 动作",
           r["level"] == "same" and not r["online"], str(r))
 
-    # 2b. 分区跨度
-    from datetime import datetime as _dt  # noqa: E402
 
+
+def test_partition_span():
+    # 2b. 分区跨度
     check("分区跨度 DAY", doris_ddl._partition_span(_dt(2026, 7, 18), "DAY")
           == ("p20260718", "2026-07-18", "2026-07-19"))
     check("分区跨度 MONTH 跨年", doris_ddl._partition_span(_dt(2026, 12, 1), "MONTH")
           == ("p202612", "2026-12-01", "2027-01-01"))
 
+
+
+# ---------------- 迁移计划与执行 ----------------
+def test_migration_plan():
     # 4. 迁移计划与 SELECT 表达式
     MAPPING_V_INT = {"source": "v", "st_type": "string", "doris_col": "v",
                      "doris_type": "INT", "nested": False}
@@ -199,263 +269,214 @@ def test_doris_ddl():
           and exprs[0].endswith("END) AS `gen_time`"), str(exprs))
 
 
+
+
+def test_migrate_table(monkeypatch):
     # 5. migrate_table 全流程（FakeConn）
-    class FakeCursor:
-        def __init__(self, conn):
-            self.conn = conn
-            self._rows = []
+    fc = FakeConn(counts=(100, 100))
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc)
+    mig = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4,
+                                  ["`id`", "`ts`", "`v`"])
+    check("迁移 RENAME->CREATE->INSERT", "ALTER TABLE `db1`.`t` RENAME `tmp_t`" in fc.execs
+          and any(s.startswith("CREATE TABLE IF NOT EXISTS") for s in fc.execs)
+          and any(s.startswith("INSERT INTO `db1`.`t`") for s in fc.execs), str(fc.execs[:4]))
+    check("行数一致删 tmp", mig["tmp_dropped"] and fc.execs[-1] == "DROP TABLE `db1`.`tmp_t`")
 
+    # TTL 迁移：关动态分区开关 -> 按数据补建历史分区 -> 开开关 -> INSERT
+    fc_ttl = FakeConn(counts=(100, 100),
+                      trunc_rows=[(_dt(2026, 7, 18),), (_dt(2026, 7, 27),)])
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_ttl)
+    mig_ttl = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4,
+                                      ["`id`", "`ts`", "`v`"])
+    ex = fc_ttl.execs
+    check("补建历史分区语句", "ALTER TABLE `db1`.`t` ADD PARTITION IF NOT EXISTS `p20260718` "
+          "VALUES [('2026-07-18'), ('2026-07-19'))" in ex, str(ex))
+    i_false = next(i for i, s in enumerate(ex) if s.startswith("ALTER TABLE")
+                   and 'dynamic_partition.enable" = "false"' in s)
+    i_add = next(i for i, s in enumerate(ex) if "ADD PARTITION" in s)
+    i_true = next(i for i, s in enumerate(ex) if s.startswith("ALTER TABLE")
+                  and 'dynamic_partition.enable" = "true"' in s)
+    i_insert = next(i for i, s in enumerate(ex) if s.startswith("INSERT INTO"))
+    check("补分区顺序：关->补建->开->INSERT", i_false < i_add < i_true < i_insert)
+    check("partitions_added 记录", mig_ttl["partitions_added"] == ["p20260718", "p20260727"],
+          str(mig_ttl["partitions_added"]))
+
+    fc2 = FakeConn(counts=(100, 90))
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc2)
+    mig2 = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4,
+                                   ["`id`", "`ts`", "`v`"])
+    check("行数不一致保留 tmp", not mig2["tmp_dropped"]
+          and not any(s == "DROP TABLE `db1`.`tmp_t`" for s in fc2.execs))
+
+    class FailInsertConn(FakeConn):
+        def cursor(self):
+            cur = FakeCursor(self)
+            orig_exec = cur.execute
+
+            def _exec(sql, args=None):
+                if sql.startswith("INSERT INTO"):
+                    raise RuntimeError("mock insert failed")
+                return orig_exec(sql, args)
+            cur.execute = _exec
+            return cur
+
+    fc3 = FailInsertConn(counts=(0, 0))
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc3)
+    try:
+        doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4, ["`id`"])
+        check("迁移失败应抛异常", False)
+    except RuntimeError:
+        check("迁移失败抛异常", True)
+    check("失败回滚表名", "DROP TABLE IF EXISTS `db1`.`t`" in fc3.execs
+          and "ALTER TABLE `db1`.`tmp_t` RENAME `t`" in fc3.execs, str(fc3.execs))
+
+    # tmp 表残留守卫：上次迁移崩溃留下 tmp_t，直接拒绝并给处理指引
+    class TmpLeftoverConn(FakeConn):
+        def cursor(self):
+            cur = FakeCursor(self)
+            orig_exec = cur.execute
+
+            def _exec(sql, args=None):
+                if "information_schema.tables" in sql:
+                    cur._rows = [("tmp_t",)]
+                    return
+                return orig_exec(sql, args)
+            cur.execute = _exec
+            return cur
+
+    fc_tmp = TmpLeftoverConn(counts=(0, 0))
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_tmp)
+    try:
+        doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4, ["`id`"])
+        check("tmp 残留应拒绝", False)
+    except RuntimeError as e:
+        check("tmp 残留拒绝并指引", "遗留的临时表" in str(e), str(e)[:80])
+    check("tmp 残留未执行 RENAME", not any("RENAME" in s for s in fc_tmp.execs))
+
+
+
+def test_ensure_table(monkeypatch):
+    # 6. ensure_table：recreate 拒绝 / online 演进
+    fc4 = FakeConn(col_rows=[("id", "bigint"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
+                   show_create=SHOW_CREATE_UNIQUE)
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc4)
+    r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4)
+    check("ensure recreate 拒绝", r.get("needs_recreate") and any("表模型" in x for x in r["reasons"]))
+    ddl_execs = [s for s in fc4.execs
+                 if s.startswith(("ALTER TABLE", "CREATE TABLE", "DROP TABLE", "INSERT INTO"))]
+    check("recreate 未执行 DDL", ddl_execs == [], str(fc4.execs))
+
+    fc5 = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
+                   show_create=SHOW_CREATE_UNIQUE.replace('"true"', '"false"'))
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc5)
+    r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4)
+    alters = [s for s in fc5.execs if s.startswith("ALTER TABLE")]
+    check("online MODIFY COLUMN", any("MODIFY COLUMN `id` BIGINT KEY" in s for s in alters),
+          str(alters))
+    check("online TTL ALTER", r.get("ttl_altered")
+          and any("dynamic_partition.start" in s for s in alters), str(alters))
+
+    # MODIFY COLUMN 必须重述原 DEFAULT（Doris 文档：MODIFY 需声明完整列信息，否则默认值被清掉）
+    fc5d = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
+                    show_create=SHOW_CREATE_UNIQUE)
+    fc5d.default_rows = [("v", "'abc'")]
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc5d)
+    r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4)
+    check("MODIFY 重述 DEFAULT",
+          any("MODIFY COLUMN `v` STRING DEFAULT 'abc'" in s for s in fc5d.execs),
+          str([s for s in fc5d.execs if "MODIFY" in s]))
+
+    # ALTER 时同步建历史分区：关开关 -> 按当前时间往前建 N 个 -> 恢复配置（不等调度器）
+    fc_hn = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
+                     show_create=SHOW_CREATE_UNIQUE.replace('"true"', '"false"'))
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_hn)
+    TTL_HN = {"num": 7, "unit": "HOUR", "column": "ts", "history_num": 3}
+    r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL_HN, "UNIQUE", 4)
+    execs = fc_hn.execs
+    i_off = next((i for i, s in enumerate(execs) if 'dynamic_partition.enable" = "false"' in s), -1)
+    adds = [s for s in execs if "ADD PARTITION IF NOT EXISTS" in s]
+    i_set = next((i for i, s in enumerate(execs)
+                  if s.startswith("ALTER TABLE `db1`.`t` SET") and "create_history_partition" in s), -1)
+    check("同步建历史分区顺序与数量", 0 <= i_off < min(i for i, s in enumerate(execs)
+          if "ADD PARTITION" in s) and len(adds) == 3 and i_set > i_off, str(execs))
+    check("恢复配置带 history_partition_num", '"dynamic_partition.history_partition_num" = "3"' in execs[i_set])
+    check("分区名按小时格式", all(re.search(r"`p\d{10}` VALUES", s) for s in adds), str(adds[0]))
+
+
+    # AGGREGATE 模型 MODIFY：非分桶 key 列带 KEY，value 列带聚合函数
+    # （分桶列=首 key 列禁止修改，本用例 id 类型一致不触发；改的是非首 key 列 k2 和 value 列 cnt）
+    AGG_MAP = [
+        {"source": "id", "st_type": "bigint", "doris_col": "id", "doris_type": "BIGINT",
+         "nested": False, "is_key": True},
+        {"source": "k2", "st_type": "bigint", "doris_col": "k2", "doris_type": "BIGINT",
+         "nested": False, "is_key": True},
+        {"source": "cnt", "st_type": "bigint", "doris_col": "cnt", "doris_type": "BIGINT",
+         "nested": False, "agg": "SUM"},
+    ]
+    fc_agg = FakeConn(
+        col_rows=[("id", "bigint"), ("k2", "int"), ("cnt", "int")],
+        show_create="CREATE TABLE `t` (\n `id` BIGINT,\n `k2` INT,\n `cnt` INT SUM\n)\n"
+                    "AGGREGATE KEY(`id`, `k2`)\nDISTRIBUTED BY HASH(`id`) BUCKETS 3")
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_agg)
+    r = doris_ddl.ensure_table(DORIS, "db1", "t", AGG_MAP, None, "AGGREGATE", 3)
+    alters = [s for s in fc_agg.execs if "MODIFY COLUMN" in s]
+    check("AGG 非分桶 key 列 MODIFY 带 KEY", any("MODIFY COLUMN `k2` BIGINT KEY" in s for s in alters),
+          str(alters))
+    check("AGG value 列 MODIFY 带 SUM", any("MODIFY COLUMN `cnt` BIGINT SUM" in s for s in alters),
+          str(alters))
+
+    # 分桶列（首 key 列）类型变化 -> 直接判 recreate（Doris 禁止修改分桶列）
+    fc_bucket = FakeConn(
+        col_rows=[("id", "int"), ("k2", "bigint"), ("cnt", "int")],
+        show_create="CREATE TABLE `t` (\n `id` INT,\n `k2` BIGINT,\n `cnt` INT SUM\n)\n"
+                    "AGGREGATE KEY(`id`, `k2`)\nDISTRIBUTED BY HASH(`id`) BUCKETS 3")
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_bucket)
+    r = doris_ddl.ensure_table(DORIS, "db1", "t", AGG_MAP, None, "AGGREGATE", 3)
+    check("分桶列类型变化判 recreate", r.get("needs_recreate")
+          and any("分桶列" in x for x in r["reasons"]), str(r.get("reasons")))
+
+    fc6 = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
+                   show_create=SHOW_CREATE_UNIQUE)
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc6)
+    r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4, dry_run=True)
+    check("dry_run 不执行", not r.get("needs_recreate")
+          and not any(s.startswith("ALTER TABLE") for s in fc6.execs), str(fc6.execs))
+
+
+
+def test_busy_retry(monkeypatch):
+    # 7b. 表忙（SCHEMA_CHANGE 状态）自动轮询重试；超时带指引抛出
+    class BusyCursor(FakeCursor):
         def execute(self, sql, args=None):
-            self.conn.execs.append(sql)
-            if "COLUMN_DEFAULT" in sql:
-                self._rows = list(getattr(self.conn, "default_rows", []))
-            elif "information_schema.columns" in sql:
-                self._rows = list(self.conn.col_rows)
-            elif sql.startswith("SHOW CREATE TABLE"):
-                self._rows = [("t", self.conn.show_create)]
-            elif sql.startswith("SELECT DISTINCT date_trunc"):
-                self._rows = list(self.conn.trunc_rows)
-            elif sql.startswith("SELECT COUNT(*)"):
-                self._rows = [(self.conn.counts.pop(0),)]
-            else:
-                self._rows = []
+            if sql.startswith("ALTER TABLE") and self.conn.busy_count > 0:
+                self.conn.execs.append(sql)
+                self.conn.busy_count -= 1
+                raise RuntimeError("(1105, 'errCode = 2, detailMessage = Table[t]'s "
+                                   "state(SCHEMA_CHANGE) is not NORMAL. "
+                                   "Do not allow doing ALTER ops')")
+            return super().execute(sql, args)
 
-        def fetchall(self):
-            return self._rows
-
-        def fetchone(self):
-            return self._rows[0] if self._rows else None
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-
-    class FakeConn:
-        def __init__(self, col_rows=(), show_create="", counts=(0, 0), trunc_rows=()):
-            self.execs = []
-            self.col_rows = col_rows
-            self.show_create = show_create
-            self.counts = list(counts)
-            self.trunc_rows = list(trunc_rows)
+    class BusyConn(FakeConn):
+        def __init__(self, busy):
+            super().__init__()
+            self.busy_count = busy
 
         def cursor(self):
-            return FakeCursor(self)
+            return BusyCursor(self)
 
-        def close(self):
-            pass
-
-
-    DORIS = {"fenodes": "fake:8030", "query_port": 9030, "username": "root", "password": "",
-             "variant_enabled": True, "default_buckets": 4, "replication_num": 1}
-
-    orig_connect = doris_ddl._connect
+    monkeypatch.setattr(doris_ddl.time, "sleep", lambda s: None)
+    fc8 = BusyConn(2)
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc8)
+    doris_ddl._exec_all(fc8, ['ALTER TABLE `db1`.`t` SET ("a" = "b")'], tolerate_noop=True)
+    check("SCHEMA_CHANGE 忙重试后成功", len(fc8.execs) == 3, str(len(fc8.execs)))
+    fc9 = BusyConn(999)
+    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc9)
     try:
-        fc = FakeConn(counts=(100, 100))
-        doris_ddl._connect = lambda d: fc
-        mig = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4,
-                                      ["`id`", "`ts`", "`v`"])
-        check("迁移 RENAME->CREATE->INSERT", "ALTER TABLE `db1`.`t` RENAME `tmp_t`" in fc.execs
-              and any(s.startswith("CREATE TABLE IF NOT EXISTS") for s in fc.execs)
-              and any(s.startswith("INSERT INTO `db1`.`t`") for s in fc.execs), str(fc.execs[:4]))
-        check("行数一致删 tmp", mig["tmp_dropped"] and fc.execs[-1] == "DROP TABLE `db1`.`tmp_t`")
+        doris_ddl._exec_all(fc9, ['ALTER TABLE `db1`.`t` SET ("a" = "b")'], max_wait_sec=4)
+        check("忙超时应抛异常", False)
+    except RuntimeError as e:
+        check("忙超时带指引", "SHOW ALTER TABLE COLUMN" in str(e), str(e)[:80])
 
-        # TTL 迁移：关动态分区开关 -> 按数据补建历史分区 -> 开开关 -> INSERT
-        fc_ttl = FakeConn(counts=(100, 100),
-                          trunc_rows=[(_dt(2026, 7, 18),), (_dt(2026, 7, 27),)])
-        doris_ddl._connect = lambda d: fc_ttl
-        mig_ttl = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4,
-                                          ["`id`", "`ts`", "`v`"])
-        ex = fc_ttl.execs
-        check("补建历史分区语句", "ALTER TABLE `db1`.`t` ADD PARTITION IF NOT EXISTS `p20260718` "
-              "VALUES [('2026-07-18'), ('2026-07-19'))" in ex, str(ex))
-        i_false = next(i for i, s in enumerate(ex) if s.startswith("ALTER TABLE")
-                       and 'dynamic_partition.enable" = "false"' in s)
-        i_add = next(i for i, s in enumerate(ex) if "ADD PARTITION" in s)
-        i_true = next(i for i, s in enumerate(ex) if s.startswith("ALTER TABLE")
-                      and 'dynamic_partition.enable" = "true"' in s)
-        i_insert = next(i for i, s in enumerate(ex) if s.startswith("INSERT INTO"))
-        check("补分区顺序：关->补建->开->INSERT", i_false < i_add < i_true < i_insert)
-        check("partitions_added 记录", mig_ttl["partitions_added"] == ["p20260718", "p20260727"],
-              str(mig_ttl["partitions_added"]))
-
-        fc2 = FakeConn(counts=(100, 90))
-        doris_ddl._connect = lambda d: fc2
-        mig2 = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4,
-                                       ["`id`", "`ts`", "`v`"])
-        check("行数不一致保留 tmp", not mig2["tmp_dropped"]
-              and not any(s == "DROP TABLE `db1`.`tmp_t`" for s in fc2.execs))
-
-        class FailInsertConn(FakeConn):
-            def cursor(self):
-                cur = FakeCursor(self)
-                orig_exec = cur.execute
-
-                def _exec(sql, args=None):
-                    if sql.startswith("INSERT INTO"):
-                        raise RuntimeError("mock insert failed")
-                    return orig_exec(sql, args)
-                cur.execute = _exec
-                return cur
-
-        fc3 = FailInsertConn(counts=(0, 0))
-        doris_ddl._connect = lambda d: fc3
-        try:
-            doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4, ["`id`"])
-            check("迁移失败应抛异常", False)
-        except RuntimeError:
-            check("迁移失败抛异常", True)
-        check("失败回滚表名", "DROP TABLE IF EXISTS `db1`.`t`" in fc3.execs
-              and "ALTER TABLE `db1`.`tmp_t` RENAME `t`" in fc3.execs, str(fc3.execs))
-
-        # tmp 表残留守卫：上次迁移崩溃留下 tmp_t，直接拒绝并给处理指引
-        class TmpLeftoverConn(FakeConn):
-            def cursor(self):
-                cur = FakeCursor(self)
-                orig_exec = cur.execute
-
-                def _exec(sql, args=None):
-                    if "information_schema.tables" in sql:
-                        cur._rows = [("tmp_t",)]
-                        return
-                    return orig_exec(sql, args)
-                cur.execute = _exec
-                return cur
-
-        fc_tmp = TmpLeftoverConn(counts=(0, 0))
-        doris_ddl._connect = lambda d: fc_tmp
-        try:
-            doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4, ["`id`"])
-            check("tmp 残留应拒绝", False)
-        except RuntimeError as e:
-            check("tmp 残留拒绝并指引", "遗留的临时表" in str(e), str(e)[:80])
-        check("tmp 残留未执行 RENAME", not any("RENAME" in s for s in fc_tmp.execs))
-
-        # 6. ensure_table：recreate 拒绝 / online 演进
-        fc4 = FakeConn(col_rows=[("id", "bigint"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
-                       show_create=SHOW_CREATE_UNIQUE)
-        doris_ddl._connect = lambda d: fc4
-        r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4)
-        check("ensure recreate 拒绝", r.get("needs_recreate") and any("表模型" in x for x in r["reasons"]))
-        ddl_execs = [s for s in fc4.execs
-                     if s.startswith(("ALTER TABLE", "CREATE TABLE", "DROP TABLE", "INSERT INTO"))]
-        check("recreate 未执行 DDL", ddl_execs == [], str(fc4.execs))
-
-        fc5 = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
-                       show_create=SHOW_CREATE_UNIQUE.replace('"true"', '"false"'))
-        doris_ddl._connect = lambda d: fc5
-        r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4)
-        alters = [s for s in fc5.execs if s.startswith("ALTER TABLE")]
-        check("online MODIFY COLUMN", any("MODIFY COLUMN `id` BIGINT KEY" in s for s in alters),
-              str(alters))
-        check("online TTL ALTER", r.get("ttl_altered")
-              and any("dynamic_partition.start" in s for s in alters), str(alters))
-
-        # MODIFY COLUMN 必须重述原 DEFAULT（Doris 文档：MODIFY 需声明完整列信息，否则默认值被清掉）
-        fc5d = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
-                        show_create=SHOW_CREATE_UNIQUE)
-        fc5d.default_rows = [("v", "'abc'")]
-        doris_ddl._connect = lambda d: fc5d
-        r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4)
-        check("MODIFY 重述 DEFAULT",
-              any("MODIFY COLUMN `v` STRING DEFAULT 'abc'" in s for s in fc5d.execs),
-              str([s for s in fc5d.execs if "MODIFY" in s]))
-
-        # ALTER 时同步建历史分区：关开关 -> 按当前时间往前建 N 个 -> 恢复配置（不等调度器）
-        fc_hn = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
-                         show_create=SHOW_CREATE_UNIQUE.replace('"true"', '"false"'))
-        doris_ddl._connect = lambda d: fc_hn
-        TTL_HN = {"num": 7, "unit": "HOUR", "column": "ts", "history_num": 3}
-        r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL_HN, "UNIQUE", 4)
-        execs = fc_hn.execs
-        i_off = next((i for i, s in enumerate(execs) if 'dynamic_partition.enable" = "false"' in s), -1)
-        adds = [s for s in execs if "ADD PARTITION IF NOT EXISTS" in s]
-        i_set = next((i for i, s in enumerate(execs)
-                      if s.startswith("ALTER TABLE `db1`.`t` SET") and "create_history_partition" in s), -1)
-        check("同步建历史分区顺序与数量", 0 <= i_off < min(i for i, s in enumerate(execs)
-              if "ADD PARTITION" in s) and len(adds) == 3 and i_set > i_off, str(execs))
-        check("恢复配置带 history_partition_num", '"dynamic_partition.history_partition_num" = "3"' in execs[i_set])
-        check("分区名按小时格式", all(re.search(r"`p\d{10}` VALUES", s) for s in adds), str(adds[0]))
-
-
-        # AGGREGATE 模型 MODIFY：非分桶 key 列带 KEY，value 列带聚合函数
-        # （分桶列=首 key 列禁止修改，本用例 id 类型一致不触发；改的是非首 key 列 k2 和 value 列 cnt）
-        AGG_MAP = [
-            {"source": "id", "st_type": "bigint", "doris_col": "id", "doris_type": "BIGINT",
-             "nested": False, "is_key": True},
-            {"source": "k2", "st_type": "bigint", "doris_col": "k2", "doris_type": "BIGINT",
-             "nested": False, "is_key": True},
-            {"source": "cnt", "st_type": "bigint", "doris_col": "cnt", "doris_type": "BIGINT",
-             "nested": False, "agg": "SUM"},
-        ]
-        fc_agg = FakeConn(
-            col_rows=[("id", "bigint"), ("k2", "int"), ("cnt", "int")],
-            show_create="CREATE TABLE `t` (\n `id` BIGINT,\n `k2` INT,\n `cnt` INT SUM\n)\n"
-                        "AGGREGATE KEY(`id`, `k2`)\nDISTRIBUTED BY HASH(`id`) BUCKETS 3")
-        doris_ddl._connect = lambda d: fc_agg
-        r = doris_ddl.ensure_table(DORIS, "db1", "t", AGG_MAP, None, "AGGREGATE", 3)
-        alters = [s for s in fc_agg.execs if "MODIFY COLUMN" in s]
-        check("AGG 非分桶 key 列 MODIFY 带 KEY", any("MODIFY COLUMN `k2` BIGINT KEY" in s for s in alters),
-              str(alters))
-        check("AGG value 列 MODIFY 带 SUM", any("MODIFY COLUMN `cnt` BIGINT SUM" in s for s in alters),
-              str(alters))
-
-        # 分桶列（首 key 列）类型变化 -> 直接判 recreate（Doris 禁止修改分桶列）
-        fc_bucket = FakeConn(
-            col_rows=[("id", "int"), ("k2", "bigint"), ("cnt", "int")],
-            show_create="CREATE TABLE `t` (\n `id` INT,\n `k2` BIGINT,\n `cnt` INT SUM\n)\n"
-                        "AGGREGATE KEY(`id`, `k2`)\nDISTRIBUTED BY HASH(`id`) BUCKETS 3")
-        doris_ddl._connect = lambda d: fc_bucket
-        r = doris_ddl.ensure_table(DORIS, "db1", "t", AGG_MAP, None, "AGGREGATE", 3)
-        check("分桶列类型变化判 recreate", r.get("needs_recreate")
-              and any("分桶列" in x for x in r["reasons"]), str(r.get("reasons")))
-
-        fc6 = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
-                       show_create=SHOW_CREATE_UNIQUE)
-        doris_ddl._connect = lambda d: fc6
-        r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4, dry_run=True)
-        check("dry_run 不执行", not r.get("needs_recreate")
-              and not any(s.startswith("ALTER TABLE") for s in fc6.execs), str(fc6.execs))
-
-        # 7b. 表忙（SCHEMA_CHANGE 状态）自动轮询重试；超时带指引抛出
-        class BusyCursor(FakeCursor):
-            def execute(self, sql, args=None):
-                if sql.startswith("ALTER TABLE") and self.conn.busy_count > 0:
-                    self.conn.execs.append(sql)
-                    self.conn.busy_count -= 1
-                    raise RuntimeError("(1105, 'errCode = 2, detailMessage = Table[t]'s "
-                                       "state(SCHEMA_CHANGE) is not NORMAL. "
-                                       "Do not allow doing ALTER ops')")
-                return super().execute(sql, args)
-
-        class BusyConn(FakeConn):
-            def __init__(self, busy):
-                super().__init__()
-                self.busy_count = busy
-
-            def cursor(self):
-                return BusyCursor(self)
-
-        orig_sleep = doris_ddl.time.sleep
-        try:
-            doris_ddl.time.sleep = lambda s: None
-            fc8 = BusyConn(2)
-            doris_ddl._connect = lambda d: fc8
-            doris_ddl._exec_all(fc8, ['ALTER TABLE `db1`.`t` SET ("a" = "b")'], tolerate_noop=True)
-            check("SCHEMA_CHANGE 忙重试后成功", len(fc8.execs) == 3, str(len(fc8.execs)))
-            fc9 = BusyConn(999)
-            doris_ddl._connect = lambda d: fc9
-            try:
-                doris_ddl._exec_all(fc9, ['ALTER TABLE `db1`.`t` SET ("a" = "b")'], max_wait_sec=4)
-                check("忙超时应抛异常", False)
-            except RuntimeError as e:
-                check("忙超时带指引", "SHOW ALTER TABLE COLUMN" in str(e), str(e)[:80])
-        finally:
-            doris_ddl.time.sleep = orig_sleep
-    finally:
-        doris_ddl._connect = orig_connect
 
 
 
