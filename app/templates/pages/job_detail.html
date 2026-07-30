@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% block page_title %}作业详情：{{ job.name }}{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="job-head">
+    <h1>{{ job.name }}</h1>
+    {% include "_badge_poller.html" %}
+    <span class="muted">环境 {{ job.env }} / 业务线 {{ job.biz_line }}</span>
+    {% if job.tag_list %}<span class="muted">标签: {{ job.tag_list|join(', ') }}</span>{% endif %}
+  </div>
+  <dl class="kv mt">
+    <dt>SeaTunnel jobId</dt>
+    <dd class="mono">{{ job.seatunnel_job_id or '(未提交)' }}</dd>
+    <dt>源</dt>
+    <dd class="mono">{{ job.source_type }}: {{ job.source_ref }}
+      （数据源 <a href="/datasources/{{ job.datasource_id }}">{{ job.datasource.name }}</a>）</dd>
+    {% if job.proto_package %}
+    <dt>proto / message</dt>
+    <dd class="mono"><a href="/protos/{{ job.proto_package_id }}">{{ job.proto_package.name }}</a>
+      / {{ job.message_name }}
+      {% if job.proto_package.status == 'updated' %}<span class="badge badge-updated">proto 已更新</span>{% endif %}
+    </dd>
+    {% endif %}
+    <dt>目标表</dt><dd class="mono">{{ job.doris_db }}.{{ job.doris_table }}</dd>
+    <dt>更新时间</dt><dd class="mono">{{ job.updated_at|dt }}</dd>
+    {% if job.status_detail %}
+    <dt>状态详情</dt><dd>{{ job.status_detail }}</dd>
+    {% endif %}
+  </dl>
+  <div class="btn-row mt">
+    {% if job.status == 'DRAFT' %}
+    <button class="btn btn-primary" hx-post="/jobs/{{ job.id }}/submit" hx-swap="none"
+            hx-confirm="提交作业到 {{ job.env }}？（会自动建表/加列）">提交</button>
+    {% elif job.status == 'RUNNING' %}
+    <button class="btn btn-warn" hx-post="/jobs/{{ job.id }}/stop" hx-swap="none"
+            hx-confirm="停止作业（带 savepoint）？">停止</button>
+    <button class="btn" hx-post="/jobs/{{ job.id }}/update" hx-swap="none"
+            hx-confirm="按当前新配置走「停止→DDL 演进→savepoint 重启」编排？（若需重建表会被拒绝并保持运行）">更新并重启</button>
+    {% elif job.status in ['FAILED', 'ERROR', 'STOPPED'] %}
+    <button class="btn btn-primary" hx-post="/jobs/{{ job.id }}/update" hx-swap="none"
+            hx-confirm="按当前新配置更新并重启（{{ '带 savepoint 恢复' if job.status == 'STOPPED' else '重新提交' }}；若需重建表会被拒绝）？">更新并重启</button>
+    {% endif %}
+    <button class="btn" hx-post="/jobs/{{ job.id }}/refresh-status"
+            hx-target=".badge-poller" hx-swap="outerHTML">刷新状态</button>
+    <a class="btn" href="/jobs/{{ job.id }}/edit">编辑</a>
+    {% if job.status != 'RUNNING' %}
+    <button class="btn btn-danger" hx-delete="/jobs/{{ job.id }}" hx-swap="none"
+            hx-confirm="确定删除作业 {{ job.name }}？版本与事件历史将一并删除。">删除</button>
+    {% endif %}
+    <a class="btn btn-danger" href="/jobs/{{ job.id }}/recreate-table">重建目标表</a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>监控</h2>
+  {% if job.status == 'RUNNING' %}
+  <div class="btn-row">
+    <span class="muted">速率图：</span>
+    {% for h, label in [(1, '1h'), (6, '6h'), (24, '24h'), (168, '7d')] %}
+    <button class="btn btn-sm job-qps-range {{ 'btn-primary' if h == 1 }}" data-hours="{{ h }}">{{ label }}</button>
+    {% endfor %}
+  </div>
+  <div class="chart-box"><canvas id="job-qps-chart"></canvas></div>
+  <div id="job-chart-empty" class="hint" style="display:none;">暂无数据</div>
+  {% else %}
+  <div class="hint">作业未在运行（当前状态：{{ job.status }}），提交后开始采集</div>
+  {% endif %}
+  <div hx-get="/jobs/{{ job.id }}/monitor" hx-trigger="load" hx-target="#monitor-box" hx-swap="innerHTML"></div>
+  <div id="monitor-box"><div class="hint">监控数据加载中…</div></div>
+</div>
+
+<div class="card">
+  <h2>字段映射（{{ job.field_mapping|length }}）</h2>
+  <table class="data">
+    <thead><tr><th>源字段</th><th>SeaTunnel 类型</th><th>Doris 列名</th><th>Doris 类型</th><th>嵌套</th><th>备注</th></tr></thead>
+    <tbody>
+      {% for m in job.field_mapping %}
+      <tr>
+        <td class="mono">{{ m.source }}</td>
+        <td class="mono">{{ m.st_type }}</td>
+        <td class="mono">{{ m.doris_col }}</td>
+        <td class="mono">{{ m.doris_type }}</td>
+        <td>{{ '是' if m.nested else '' }}</td>
+        {% set mnote = (m.get('src_path', '') ~ ('；' if m.get('src_path') and m.get('note') else '') ~ m.get('note', '')) %}
+        <td class="muted cell-clip" style="max-width:280px;" title="{{ mnote }}">{{ mnote }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <details>
+    <summary>当前 conf（SeaTunnel 配置）</summary>
+    <div class="details-body">
+      {% if job.seatunnel_conf %}<pre class="code">{{ job.seatunnel_conf | dec | mask_conf }}</pre>
+      {% else %}<div class="hint">尚未渲染（创建时预渲染失败或待提交）。</div>{% endif %}
+    </div>
+  </details>
+</div>
+
+<div class="card">
+  <h2>版本历史（{{ job.versions|length }}）</h2>
+  {% if job.versions %}
+    {% for v in job.versions %}
+    <details>
+      <summary>v{{ v.version }} — {{ v.created_at|dt }} — {{ v.note }}
+        {% if v.proto_version %}<span class="type-tag">proto: {{ v.proto_version }}</span>{% endif %}
+      </summary>
+      <div class="details-body">
+        {% if v.ddl %}<h3>本次 DDL</h3><pre class="code">{{ v.ddl }}</pre>{% endif %}
+        <pre class="code">{{ v.conf | dec | mask_conf }}</pre>
+      </div>
+    </details>
+    {% endfor %}
+  {% else %}
+  <div class="hint">暂无版本快照。</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>事件时间线</h2>
+  {% if job.events %}
+  <div class="timeline">
+    {% for ev in job.events %}
+    <div class="event">
+      <div><strong>{{ ev.event }}</strong> <span class="time">{{ ev.created_at|dt }}</span></div>
+      {% if ev.detail %}
+        {% if ev.detail|length > 240 %}
+        <details>
+          <summary class="muted" style="font-weight:400;">{{ ev.detail[:200] }}…（展开全文）</summary>
+          <div class="details-body muted" style="white-space: pre-wrap; word-break: break-all;">{{ ev.detail }}</div>
+        </details>
+        {% else %}
+        <div class="muted">{{ ev.detail }}</div>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="hint">暂无事件。</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <details>
+    <summary>复制作业</summary>
+    <div class="details-body">
+      <form id="copy-form" method="post" action="/jobs/{{ job.id }}/copy">
+        <input type="hidden" name="type" value="{{ job.source_type }}">
+        <input type="hidden" name="field_name" value="target_datasource_id">
+        <input type="hidden" name="with_objects" value="0">
+        <div class="form-grid">
+          <div class="form-item">
+            <label for="copy-env">目标环境 <span class="req">*</span></label>
+            <select id="copy-env" name="target_env" required>
+              {% for e in env_names %}<option value="{{ e }}" {{ 'selected' if e == job.env }}>{{ e }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="form-item">
+            <label for="f-new-name">新作业名称</label>
+            <input type="text" id="f-new-name" name="new_name"
+                   placeholder="默认 {{ job.name }}_copy">
+          </div>
+        </div>
+        <div hx-get="/api/datasources/options" hx-trigger="load, change from:#copy-env"
+             hx-include="#copy-form" hx-target="#copy-ds-box" hx-swap="innerHTML"></div>
+        <div id="copy-ds-box"><div class="hint">选择目标环境后加载同类型数据源</div></div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary"
+                  onclick="return confirm('确认复制？将以 DRAFT 创建新作业并跳到编辑页');">复制</button>
+        </div>
+      </form>
+    </div>
+  </details>
+</div>
+
+<script src="/static/chart.umd.min.js"></script>
+<script>
+// 作业速率图（source/sink QPS 双折线，fetch JSON + Chart.js 本地引用）
+(function () {
+  var chart = null;
+  var canvas = document.getElementById('job-qps-chart');
+  var empty = document.getElementById('job-chart-empty');
+  if (!canvas) return;  // 作业非 RUNNING 时页面不渲染图表
+  function load(hours) {
+    fetch('/api/jobs/{{ job.id }}/metrics-series?hours=' + hours)
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        // 样本不足（<2）时不画空轴，显示暂无数据
+        if (!d.ts || d.ts.length === 0) {
+          canvas.style.display = 'none';
+          empty.style.display = '';
+          if (chart) { chart.destroy(); chart = null; }
+          return;
+        }
+        canvas.style.display = '';
+        empty.style.display = 'none';
+        draw(d);
+      });
+  }
+  function draw(d) {
+    var ctx = canvas.getContext('2d');
+    if (chart) chart.destroy();
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: d.ts,
+        datasets: [
+          { label: 'source QPS', data: d.source_qps, borderColor: '#3b82f6', pointRadius: 0, borderWidth: 1.5 },
+          { label: 'sink QPS', data: d.sink_qps, borderColor: '#22c55e', pointRadius: 0, borderWidth: 1.5 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+                 scales: { x: { ticks: { maxTicksLimit: 12 } }, y: { beginAtZero: true } } }
+    });
+  }
+  document.querySelectorAll('.job-qps-range').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.job-qps-range').forEach(function (x) { x.classList.remove('btn-primary'); });
+      this.classList.add('btn-primary');
+      load(this.dataset.hours);
+    });
+  });
+  load(1);
+})();
+</script>
+{% endblock %}

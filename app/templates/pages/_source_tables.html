@@ -1,0 +1,18 @@
+{# 表/集合选择片段（两级级联第二级，填充 #src-table-box）。
+   input+datalist：可输入筛选；值为完整 source_ref（库.表）；
+   只有一个候选时自动填入并立即生成映射预览。上下文：ds, db_name, tables #}
+<label for="f-source-ref">{{ '集合' if ds.type == 'mongodb' else '表' }} <span class="req">*</span></label>
+{% if tables %}
+<input type="text" id="f-source-ref" name="source_ref" required list="src-table-list" autocomplete="off"
+       value="{{ db_name ~ '.' ~ tables[0] if tables|length == 1 else '' }}"
+       placeholder="输入关键字筛选，共 {{ tables|length }} 张"
+       hx-get="/api/jobs/preview-mapping" hx-include="#job-form"
+       hx-trigger="{{ 'load, change' if tables|length == 1 else 'change' }}"
+       hx-target="#mapping-box" hx-swap="innerHTML">
+<datalist id="src-table-list">
+  {% for t in tables %}<option value="{{ db_name }}.{{ t }}">{% endfor %}
+</datalist>
+{% else %}
+<div class="hint">库 {{ db_name }} 下未发现{{ '集合' if ds.type == 'mongodb' else '表' }}，请检查元数据或更换库</div>
+<input type="hidden" name="source_ref" value="">
+{% endif %}

@@ -1,0 +1,23 @@
+{# 数据源下拉片段。上下文：options, env, type, field_name（select 的 name）, with_objects（是否联动源对象） #}
+{% if not env or not type %}
+<div class="hint">请先选择环境与源类型</div>
+{% elif options %}
+<div class="form-item">
+  <label for="f-ds">数据源 <span class="req">*</span></label>
+  <select id="f-ds" name="{{ field_name }}" required
+          {% if with_objects and batch %}
+          hx-get="/api/datasources/batch-objects" hx-include="#batch-form" hx-trigger="change"
+          hx-target="#objects-box" hx-swap="innerHTML"
+          {% elif with_objects %}
+          hx-get="/api/datasources/objects" hx-include="#job-form" hx-trigger="change"
+          hx-target="#objects-box" hx-swap="innerHTML"
+          {% endif %}>
+    <option value="">请选择数据源</option>
+    {% for ds in options %}
+    <option value="{{ ds.id }}">{{ ds.name }}（{{ ds|ds_addr }}）{% if ds.metadata_status == 'error' %} [元数据异常]{% endif %}</option>
+    {% endfor %}
+  </select>
+</div>
+{% else %}
+<div class="hint">环境 {{ env }} 下暂无 {{ type }} 类型数据源，<a href="/datasources/new">先去创建</a>。</div>
+{% endif %}

@@ -1,0 +1,69 @@
+{# 作业监控指标块片段（填充 job_detail 的 #monitor-box）。
+   上下文：job, ws(写入统计), cp(checkpoint), lag(kafka lag 或 None), ts(Doris 表统计) #}
+<div class="metric-grid">
+  <div class="metric-card">
+    <div class="metric-title">写入速率（行/秒）</div>
+    <div class="mono">1 分钟: {{ ws.rate_1m }}</div>
+    <div class="mono">1 小时: {{ ws.rate_1h }}</div>
+    <div class="mono">1 天: {{ ws.rate_1d }}</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-title">累计写入</div>
+    <div class="mono">{{ '{:,}'.format(ws.total_count) }} 行</div>
+    <div class="mono">{{ ws.total_bytes|human_bytes }}</div>
+    <div class="muted">最后写入: {{ ws.last_write_at|dt }}</div>
+    <div class="muted" title="累计写入 = 本作业的 SeaTunnel 写入计数（故障重放可能重复计数）；与目标表行数不一致是常态——表行数是全历史总量，可能包含之前作业/重放写入的数据">口径说明 ⓘ</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-title">Checkpoint</div>
+    {% if cp.error %}
+    <div class="muted">{{ cp.error }}</div>
+    {% else %}
+    <div class="mono">完成 {{ cp.completed }} / 触发 {{ cp.triggered }}（失败 {{ cp.failed }}）</div>
+    <div class="mono">最近耗时: {{ cp.latestDurationMs if cp.latestDurationMs is not none else '-' }} ms</div>
+    <div class="mono">状态大小: {{ cp.stateSize or '-' }}</div>
+    {% endif %}
+  </div>
+  {% if lag is not none %}
+  <div class="metric-card">
+    <div class="metric-title">Kafka 消费滞后</div>
+    {% if lag.error %}
+    <div class="muted">{{ lag.error }}</div>
+    {% else %}
+    <div class="mono {{ 'test-fail' if lag.total_lag > 0 }}">总 lag: {{ lag.total_lag }}</div>
+    {% if lag.partitions %}
+    <table class="data">
+      <thead><tr><th>分区</th><th>end</th><th>committed</th><th>lag</th></tr></thead>
+      <tbody>
+        {% for p in lag.partitions %}
+        <tr><td class="num">{{ p.partition }}</td><td class="num">{{ p.end }}</td>
+            <td class="num">{{ p.committed if p.committed is not none else '-' }}</td>
+            <td class="num">{{ p.lag if p.lag is not none else '-' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+  <div class="metric-card">
+    <div class="metric-title">Doris 目标表</div>
+    {% if ts.error %}
+    <div class="muted">{{ ts.error }}</div>
+    {% else %}
+    <div class="mono">大小: {{ ts.size_human }}</div>
+    <div class="mono">分区数: {{ ts.partitions }}</div>
+    <div class="btn-row" style="margin-top:6px;">
+      <button class="btn btn-sm" hx-get="/jobs/{{ job.id }}/doris-rows"
+              hx-target="#doris-rows" hx-swap="innerHTML">查询行数</button>
+      <span id="doris-rows" class="muted">COUNT(*) 大表较慢，按需点击</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="btn-row mt">
+  <button class="btn btn-sm" hx-get="/api/jobs/{{ job.id }}/logs"
+          hx-target="#job-logs" hx-swap="innerHTML">查看作业日志</button>
+</div>
+<div id="job-logs"></div>

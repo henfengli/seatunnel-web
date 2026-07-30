@@ -1,0 +1,39 @@
+{# 批量建作业：源对象多选列表（填充 #objects-box）。上下文：ds, objects, metadata_ready #}
+{% if not metadata_ready %}
+<div class="alert alert-error">元数据未就绪（{{ ds.metadata_status }}），请先到 <a href="/datasources/{{ ds.id }}">数据源详情页</a> 刷新元数据。</div>
+{% elif objects %}
+<div class="btn-row">
+  <input type="text" placeholder="过滤…" oninput="batchObjFilter(this.value)" style="width:240px;">
+  <button type="button" class="btn btn-sm" onclick="batchObjPick(true)">全选（当前过滤结果）</button>
+  <button type="button" class="btn btn-sm" onclick="batchObjPick(false)">清空</button>
+  <span class="hint">已选 <b id="obj-pick-count">0</b> / {{ objects|length }}</span>
+</div>
+<div class="obj-pick" id="obj-pick">
+  {% for o in objects %}
+  <label class="obj-pick-item" data-name="{{ o|lower }}">
+    <input type="checkbox" name="objects" value="{{ o }}" onchange="batchObjCount()"> <span class="mono">{{ o }}</span>
+  </label>
+  {% endfor %}
+</div>
+<script>
+// 过滤只影响显示，不改变勾选状态；全选作用于当前可见（过滤后）项
+function batchObjFilter(q) {
+  q = q.trim().toLowerCase();
+  document.querySelectorAll('#obj-pick .obj-pick-item').forEach(function (el) {
+    el.style.display = !q || el.dataset.name.indexOf(q) >= 0 ? '' : 'none';
+  });
+}
+function batchObjPick(v) {
+  document.querySelectorAll('#obj-pick .obj-pick-item').forEach(function (el) {
+    if (!v || el.style.display !== 'none') el.querySelector('input').checked = v;
+  });
+  batchObjCount();
+}
+function batchObjCount() {
+  document.getElementById('obj-pick-count').textContent =
+    document.querySelectorAll('#obj-pick input[type=checkbox]:checked').length;
+}
+</script>
+{% else %}
+<div class="hint">元数据中没有可选对象。</div>
+{% endif %}

@@ -1,0 +1,35 @@
+env {
+  job.mode = "BATCH"
+  parallelism = {{ parallelism }}
+}
+source {
+  MongoDB {
+{% if ds.get('uri') %}    uri = "{{ ds.uri | hq }}"
+{% elif ds.get('username') or ds.get('user') %}    uri = "mongodb://{{ (ds.get('username') or ds.get('user')) | urlq | hq }}:{{ ds.get('password', '') | urlq | hq }}@{{ ds.get('host', 'localhost') | hq }}:{{ ds.get('port', 27017) }}/"
+{% else %}    uri = "mongodb://{{ ds.get('host', 'localhost') | hq }}:{{ ds.get('port', 27017) }}/"
+{% endif %}    database = "{{ source_db }}"
+    collection = "{{ source_table }}"
+    plugin_output = "st_src"
+    schema = {
+{% include "_schema_fields.conf.j2" %}
+    }
+  }
+}
+{% if sql_select %}
+transform {
+  # ms_epoch 列按数值量级缩放 epoch（SeaTunnel SQL transform 原生 CASE，ZetaSQLFunction 验证）
+  Sql {
+    plugin_input = "st_src"
+    plugin_output = "st_flat"
+    query = """
+    SELECT {{ sql_select | join(', ') }} FROM st_src
+    """
+  }
+}
+{% endif %}
+{% if sql_select %}
+{% set sink_plugin_input = "st_flat" %}
+{% endif %}
+sink {
+{% include "_doris_sink.conf.j2" %}
+}

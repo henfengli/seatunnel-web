@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block page_title %}引擎日志：{{ env.name }}{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between;">
+    <h2 style="margin:0;">{{ env.name }} — SeaTunnel 引擎主日志</h2>
+    <div class="btn-row">
+      <a class="btn btn-sm" href="/environments/{{ env.id }}/logs">刷新</a>
+      <a class="btn btn-sm" href="/environments">返回环境列表</a>
+    </div>
+  </div>
+  <div class="hint" style="margin-top:8px;">作业级日志在作业详情页查看；routing 分流后主日志只含引擎系统事件，不含作业日志。</div>
+</div>
+<div class="card">
+  {% if logs.error %}
+  <div class="alert alert-error">{{ logs.error }}</div>
+  {% else %}
+  <div class="muted mono" style="margin-bottom:8px;">{{ logs.link }}（截尾 {{ logs.lines|length }} 行）</div>
+  <pre class="code log-box">{{ logs.lines | join('\n') }}</pre>
+  {% endif %}
+</div>
+{% endblock %}

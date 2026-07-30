@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block page_title %}批量新建作业：逐对象配置{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>共享配置</h2>
+  <dl class="kv">
+    <dt>环境</dt><dd>{{ ctx.env }}</dd>
+    <dt>数据源</dt><dd>{{ ds.name }}（{{ ctx.source_type }}）</dd>
+    {% if pkg %}<dt>proto / message</dt><dd class="mono">{{ pkg.name }} / {{ ctx.message_name }}</dd>{% endif %}
+    <dt>目标库</dt><dd class="mono">{{ ctx.doris_db }}</dd>
+    <dt>对象数</dt><dd>{{ items|length }}</dd>
+  </dl>
+</div>
+
+<form id="batch-form" method="post" action="/jobs/batch-create">
+  {# 共享配置透传（隐藏域），供创建时使用 #}
+  {% for k, v in ctx.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+
+  {% for it in items %}
+  <details class="obj-block" {% if loop.first %}open{% endif %}>
+    <summary>
+      <b>{{ it.name }}</b>
+      <span class="mono muted">{{ it.ref }} → {{ ctx.doris_db }}.{{ it.doris_table }}</span>
+      {% if it.error %}<span class="test-fail">（映射生成失败，不会创建）</span>{% endif %}
+    </summary>
+    <div class="details-body">
+      {% if it.error %}
+      <div class="alert alert-error">{{ it.error }}</div>
+      {% else %}
+      <input type="hidden" name="o_idx" value="{{ it.i }}">
+      <input type="hidden" name="{{ it.p }}ref" value="{{ it.ref }}">
+      {# 以下隐藏域供「拍平展开」重渲染本对象映射块（hx-include="closest .obj-block"） #}
+      <input type="hidden" name="{{ it.p }}ds" value="{{ ds.id }}">
+      <input type="hidden" name="{{ it.p }}stype" value="{{ ctx.source_type }}">
+      <input type="hidden" name="{{ it.p }}env" value="{{ ctx.env }}">
+      <input type="hidden" name="{{ it.p }}pkg" value="{{ ctx.proto_package_id }}">
+      <input type="hidden" name="{{ it.p }}msg" value="{{ ctx.message_name }}">
+      <input type="hidden" name="{{ it.p }}addts" value="{{ ctx.add_timestamps }}">
+      <div class="form-grid">
+        <div class="form-item">
+          <label>作业名称 <span class="req">*</span></label>
+          <input type="text" name="{{ it.p }}name" required value="{{ it.name }}">
+        </div>
+        <div class="form-item">
+          <label>目标 Doris 表 <span class="req">*</span></label>
+          <input type="text" name="{{ it.p }}doris_table" required value="{{ it.doris_table }}">
+        </div>
+        <div class="form-item">
+          <label>目标表模型</label>
+          <select name="{{ it.p }}table_model" class="obj-model">
+            <option value="DUPLICATE" selected>DUPLICATE KEY（默认，日志追加）</option>
+            <option value="UNIQUE">UNIQUE KEY（按 key 列去重）</option>
+            <option value="AGGREGATE">AGGREGATE KEY（预聚合）</option>
+          </select>
+          <div class="hint">UNIQUE/AGGREGATE 时在映射表勾选 key 列（不选默认前 3 个标量列）</div>
+        </div>
+        <div class="form-item">
+          <label>目标表 TTL（留存时长）</label>
+          <div class="btn-row">
+            <input type="number" name="{{ it.p }}ttl_num" min="1" style="width:100px;" placeholder="永久">
+            <select name="{{ it.p }}ttl_unit">
+              {% for u in ['HOUR', 'DAY', 'WEEK', 'MONTH'] %}
+              <option value="{{ u }}" {{ 'selected' if u == 'DAY' }}>{{ u }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="hint">全量/存量同步：预建历史分区数填在右侧（窗口外数据会整批失败）</div>
+        </div>
+        <div class="form-item">
+          <label>预建历史分区数（可选）</label>
+          <input type="number" name="{{ it.p }}ttl_history_num" min="1" style="width:110px;"
+                 placeholder="默认 0">
+        </div>
+      </div>
+      <div id="omap-{{ it.p[:-1] }}">
+        {% set p, mapping, error = it.p, it.mapping, none %}
+        {% include "_batch_mapping.html" %}
+      </div>
+      {% endif %}
+    </div>
+  </details>
+  {% endfor %}
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">批量创建（DRAFT）</button>
+    <a class="btn" href="/jobs/batch-new">上一步</a>
+    <span class="hint">创建后在作业列表逐个「提交」才会真正运行</span>
+  </div>
+</form>
+
+<script>
+// 每个对象的表模型切换：key 勾选框与聚合下拉显隐（class 打在各自 obj-block 上，互不干扰）
+document.querySelectorAll('.obj-block').forEach(function (block) {
+  var sel = block.querySelector('.obj-model');
+  if (!sel) return;
+  function sync() {
+    block.classList.toggle('model-agg', sel.value === 'AGGREGATE');
+    block.classList.toggle('model-keyed', sel.value === 'UNIQUE' || sel.value === 'AGGREGATE');
+  }
+  sel.addEventListener('change', sync);
+  sync();
+});
+</script>
+{% endblock %}

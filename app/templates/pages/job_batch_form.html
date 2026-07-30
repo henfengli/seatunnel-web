@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block page_title %}批量新建作业{% endblock %}
+{% block content %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form id="batch-form" method="post" action="/jobs/batch-new/preview">
+  <fieldset>
+    <legend>1. 共享配置（对本批次所有作业生效）</legend>
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-env">环境 <span class="req">*</span></label>
+        {% set cur_env = form.get('env') or (env_names[0] if env_names else '') %}
+        <select id="f-env" name="env" required>
+          {% if not env_names %}<option value="">请先到「环境」页创建环境</option>{% endif %}
+          {% for e in env_names %}
+          <option value="{{ e }}" {{ 'selected' if cur_env == e }}>{{ e }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-item">
+        <label for="f-source-type">源类型 <span class="req">*</span></label>
+        <select id="f-source-type" name="source_type" required>
+          <option value="">请选择源类型</option>
+          {% for t in ds_types %}
+          <option value="{{ t }}" {{ 'selected' if form.get('source_type') == t }}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-item">
+        <label for="f-tags">标签（逗号分隔）</label>
+        <input type="text" id="f-tags" name="tags" value="{{ form.get('tags', '') }}" placeholder="如 cdc,实时">
+      </div>
+      <div class="form-item">
+        <label for="f-doris-db">目标 Doris 库 <span class="req">*</span></label>
+        <input type="text" id="f-doris-db" name="doris_db" required
+               value="{{ form.get('doris_db', '') }}" placeholder="本批次所有作业写入同一库">
+      </div>
+    </div>
+    <div class="kafka-only form-grid" style="margin-top:12px;">
+      <div class="form-item">
+        <label for="proto-select">Proto 包（kafka 批次必选）<span class="req">*</span></label>
+        <span hx-get="/api/protos/options" hx-trigger="load" hx-target="#proto-select" hx-swap="innerHTML"></span>
+        <select id="proto-select" name="proto_package_id"
+                hx-get="/api/protos/messages?batch=1" hx-include="#batch-form" hx-trigger="change"
+                hx-target="#message-box" hx-swap="innerHTML">
+          <option value="">加载中…</option>
+        </select>
+      </div>
+      <div class="form-item" id="message-box">
+        <label>Message</label>
+        <div class="hint">请先选择 proto 包</div>
+      </div>
+    </div>
+    <details style="margin-top:10px;">
+      <summary>高级选项（共享）</summary>
+      <div class="details-body form-grid">
+        <div class="form-item">
+          <label><input type="checkbox" name="add_timestamps" value="on"
+                        {{ 'checked' if not form or form.get('add_timestamps') == 'on' }}> 附加 kafka 时间与入库时间列</label>
+          <div class="hint">kafka 源追加 kafka_ts（消息时间）；所有源追加 doris_ts（入库时间）</div>
+        </div>
+        <div class="form-item">
+          <label for="f-parallel">parallelism</label>
+          <input type="number" id="f-parallel" name="parallelism" min="1"
+                 value="{{ form.get('parallelism', '') }}" placeholder="默认 1">
+        </div>
+        <div class="form-item">
+          <label for="f-ckpt">checkpoint.interval（毫秒）</label>
+          <input type="number" id="f-ckpt" name="checkpoint_interval" min="1000"
+                 value="{{ form.get('checkpoint_interval', '') }}" placeholder="默认 5000">
+        </div>
+        <div class="form-item">
+          <label for="f-buckets">分桶数（目标 Doris 表）</label>
+          <input type="number" id="f-buckets" name="buckets" min="1"
+                 value="{{ form.get('buckets', '') }}" placeholder="默认按环境配置">
+        </div>
+        <div class="form-item kafka-only">
+          <label for="f-start-mode">start_mode（kafka 起始位点）</label>
+          <select id="f-start-mode" name="start_mode">
+            <option value="">默认 latest</option>
+            <option value="latest" {{ 'selected' if form.get('start_mode') == 'latest' }}>latest</option>
+            <option value="earliest" {{ 'selected' if form.get('start_mode') == 'earliest' }}>earliest</option>
+          </select>
+        </div>
+        <div class="form-item mongo-only">
+          <label for="f-mongo-mode">同步模式（MongoDB 源）</label>
+          <select id="f-mongo-mode" name="mongo_mode">
+            <option value="batch">批式快照（一次性全量）</option>
+            <option value="cdc" {{ 'selected' if form.get('mongo_mode') == 'cdc' }}>CDC 持续同步（需 Mongo 副本集）</option>
+          </select>
+          <div class="hint">初始全量选批式；实时同步选 CDC。需要 update/delete 语义时目标表模型选 UNIQUE KEY</div>
+        </div>
+        <div class="form-item mongo-only mongo-cdc-only">
+          <label for="f-cdc-startup">CDC startup.mode</label>
+          <select id="f-cdc-startup" name="cdc_startup_mode">
+            <option value="initial">initial（先快照后增量）</option>
+            <option value="latest" {{ 'selected' if form.get('cdc_startup_mode') == 'latest' }}>latest（仅增量）</option>
+          </select>
+        </div>
+        <div class="form-item mongo-only mongo-cdc-only">
+          <label for="f-cdc-bs">CDC batch.size</label>
+          <input type="number" id="f-cdc-bs" name="cdc_batch_size" min="1"
+                 value="{{ form.get('cdc_batch_size', '') }}" placeholder="默认 1024">
+        </div>
+      </div>
+    </details>
+    <div class="hint" style="margin-top:8px;">消费组不共享：每个作业默认用自己的作业名作为 consumer group。</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. 选择数据源（一批一个数据源）</legend>
+    <div hx-get="/api/datasources/options?batch=1" hx-trigger="change from:#f-env, change from:#f-source-type"
+         hx-include="#batch-form" hx-target="#ds-box" hx-swap="innerHTML"></div>
+    <div id="ds-box"><div class="hint">请先选择环境与源类型</div></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. 勾选源对象</legend>
+    <div id="objects-box"><div class="hint">请先选择数据源</div></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>4. 下一步</legend>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">下一步：逐对象配置</button>
+      <a class="btn" href="/jobs">取消</a>
+      <span class="hint">下一步可为每个对象单独配置作业名 / 目标表 / 表模型 / TTL / 字段映射</span>
+    </div>
+  </fieldset>
+</form>
+
+<script>
+// kafka/mongo 专属项按源类型显隐；CDC 子选项按同步模式显隐
+(function () {
+  var typeEl = document.getElementById('f-source-type');
+  var modeEl = document.getElementById('f-mongo-mode');
+  function sync() {
+    document.querySelectorAll('.kafka-only').forEach(function (el) {
+      el.style.display = typeEl.value === 'kafka' ? '' : 'none';
+    });
+    document.querySelectorAll('.mongo-only').forEach(function (el) {
+      el.style.display = typeEl.value === 'mongodb' ? '' : 'none';
+    });
+    syncCdc();
+  }
+  function syncCdc() {
+    var cdc = typeEl.value === 'mongodb' && modeEl && modeEl.value === 'cdc';
+    document.querySelectorAll('.mongo-cdc-only').forEach(function (el) {
+      el.style.display = cdc ? '' : 'none';
+    });
+  }
+  typeEl.addEventListener('change', sync);
+  if (modeEl) modeEl.addEventListener('change', syncCdc);
+  sync();
+})();
+</script>
+{% endblock %}

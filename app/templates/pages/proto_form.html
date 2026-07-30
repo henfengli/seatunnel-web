@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% set is_edit = pkg is not none %}
+{% block page_title %}{{ '编辑 Proto 包' if is_edit else '新建 Proto 包' }}{% endblock %}
+{% block content %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="{{ '/protos/' ~ pkg.id if is_edit else '/protos' }}">
+  <fieldset>
+    <legend>基本信息</legend>
+    <div class="form-item">
+      <label for="f-name">名称 <span class="req">*</span></label>
+      <div class="input-suffix">
+        <input type="text" id="f-name" name="name" required
+               value="{{ pkg.name if pkg else form.get('name', '') }}" placeholder="如 trade-events">
+        <span class="suffix-dim">.proto</span>
+      </div>
+      <div class="hint">无需手动输入 .proto 后缀，输入了也会自动去掉</div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>方式一：来源 URL 自动拉取</legend>
+    <div class="form-item">
+      <label for="f-url">来源 URL</label>
+      <input type="url" id="f-url" name="source_url"
+             value="{{ pkg.source_url if pkg else form.get('source_url', '') }}"
+             placeholder="https://proto-site.example.com/trade.proto">
+    </div>
+    <div class="form-item">
+      <label for="f-auth">Authorization 头（可选，加密存储）</label>
+      <input type="password" id="f-auth" name="auth_header" value=""
+             placeholder="Bearer xxxx">
+      {% if is_edit and pkg.auth_header %}<div class="hint">已配置，留空表示不修改</div>{% endif %}
+    </div>
+    <div class="form-item">
+      <label for="f-interval">拉取间隔（秒）</label>
+      <input type="number" id="f-interval" name="poll_interval_sec" min="60"
+             value="{{ pkg.poll_interval_sec if pkg else form.get('poll_interval_sec', '3600') }}">
+      <div class="hint">仅方式一生效：按此间隔自动检查 proto 站点更新</div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>方式二：直接粘贴 proto 内容</legend>
+    <div class="form-item">
+      <label for="f-content">proto 内容{% if not is_edit %}（与 URL 二选一，粘贴优先）{% endif %}</label>
+      <textarea id="f-content" name="content" rows="12"
+                placeholder='syntax = "proto3"; ...'>{{ form.get('content', '') }}</textarea>
+      {% if is_edit and pkg.origin == 'url' %}
+      <div class="alert alert-block">当前为 URL 定时拉取模式，内容不可编辑。粘贴内容保存后将切换为手动模式（停止自动拉取）。</div>
+      {% elif is_edit %}
+      <div class="hint">留空不改动现有内容；粘贴新内容将重新解析并记录 diff</div>
+      {% endif %}
+    </div>
+  </fieldset>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">{{ '保存修改' if is_edit else '创建' }}</button>
+    <a class="btn" href="{{ '/protos/' ~ pkg.id if is_edit else '/protos' }}">取消</a>
+  </div>
+</form>
+
+{% if not is_edit %}
+<form method="post" action="/protos/upload" enctype="multipart/form-data">
+  <fieldset>
+    <legend>方式三：批量上传 .proto 文件</legend>
+    <div class="form-item">
+      <label for="f-files">选择文件（可多选）</label>
+      <input type="file" id="f-files" name="files" multiple accept=".proto" required>
+      <div class="hint">每个文件创建一个 proto 包，名称取文件名（自动去掉 .proto 后缀）；同名包自动跳过</div>
+    </div>
+  </fieldset>
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">批量上传</button>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block page_title %}Proto 包详情：{{ pkg.name }}{% endblock %}
+
+{% macro field_tree(fields) %}
+<ul class="tree">
+  {% for f in fields %}
+  <li class="leaf">
+    {{ f.name }}
+    <span class="type-tag">
+      {{ f.label }}
+      {%- if f.proto_type == 'message' %} {{ f.type_name }}
+      {%- elif f.proto_type == 'map' %} map&lt;{{ f.key_type }}, {{ f.value_type }}&gt;
+      {%- elif f.proto_type == 'enum' %} enum {{ f.type_name }}
+      {%- else %} {{ f.proto_type }}
+      {%- endif -%}
+    </span>
+    {% if f.fields %}{{ field_tree(f.fields) }}{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+
+{% block content %}
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between;">
+    <h2 style="margin:0;">{{ pkg.name }}
+      <span class="badge badge-{{ pkg.status }}"
+            {% if pkg.error %}title="{{ pkg.error }}"{% endif %}>{{ pkg.status }}</span>
+    </h2>
+    <div class="btn-row">
+      {% if pkg.source_url %}
+      <button class="btn btn-sm" hx-post="/protos/{{ pkg.id }}/poll" hx-swap="none"
+              hx-confirm="立即从来源 URL 拉取？">立即拉取</button>
+      {% endif %}
+      <a class="btn btn-sm" href="/protos/{{ pkg.id }}/edit">编辑</a>
+      <button class="btn btn-sm btn-danger" hx-delete="/protos/{{ pkg.id }}" hx-swap="none"
+              hx-confirm="确定删除 proto 包 {{ pkg.name }}？（有作业引用时会被拒绝）">删除</button>
+    </div>
+  </div>
+  <dl class="kv mt">
+    <dt>来源</dt>
+    <dd class="mono">
+      {% if pkg.origin == 'url' %}URL 拉取: {{ pkg.source_url }}
+      {% elif pkg.origin == 'upload' %}文件上传
+      {% else %}手动粘贴{% endif %}
+    </dd>
+    <dt>当前版本</dt><dd class="mono">{{ pkg.current_version or '-' }}</dd>
+    <dt>拉取间隔</dt><dd>{{ pkg.poll_interval_sec }} 秒</dd>
+    <dt>最近拉取</dt><dd class="mono">{{ pkg.last_polled_at|dt }}</dd>
+    <dt>Authorization 头</dt><dd>{{ '已配置（加密存储）' if pkg.auth_header else '未配置' }}</dd>
+  </dl>
+  {% if pkg.error %}<div class="alert alert-error mt">{{ pkg.error }}</div>{% endif %}
+</div>
+
+{% if diff and (diff.added_messages or diff.removed_messages or diff.changed) %}
+<div class="card">
+  <h2>最近版本 Diff</h2>
+  {% if diff.added_messages %}
+  <p>新增 message：{% for m in diff.added_messages %}<span class="badge badge-ok">{{ m }}</span> {% endfor %}</p>
+  {% endif %}
+  {% if diff.removed_messages %}
+  <p>删除 message：{% for m in diff.removed_messages %}<span class="badge badge-error">{{ m }}</span> {% endfor %}</p>
+  {% endif %}
+  {% for msg, ch in diff.changed.items() %}
+  <details>
+    <summary>变更：{{ msg }}</summary>
+    <div class="details-body">
+      {% if ch.added_fields %}<div>新增字段：{% for f in ch.added_fields %}<span class="badge badge-ok">{{ f }}</span> {% endfor %}</div>{% endif %}
+      {% if ch.removed_fields %}<div>删除字段：{% for f in ch.removed_fields %}<span class="badge badge-error">{{ f }}</span> {% endfor %}</div>{% endif %}
+      {% if ch.type_changed %}<div>类型/结构变化：{% for f in ch.type_changed %}<span class="badge badge-updated">{{ f }}</span> {% endfor %}</div>{% endif %}
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>顶层 Message（{{ top_level|length }}）</h2>
+  {% if top_level %}
+    {% for m in top_level %}
+    <details>
+      <summary class="mono">{{ m }}</summary>
+      <div class="details-body">{{ field_tree(messages.get(m, [])) }}</div>
+    </details>
+    {% endfor %}
+  {% else %}
+  <div class="hint">尚未解析出 message（可能首次载入失败）。</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <details>
+    <summary>原始 proto 内容</summary>
+    <div class="details-body"><pre class="code">{{ pkg.content or '(空)' }}</pre></div>
+  </details>
+  {% if pkg.prev_content %}
+  <details>
+    <summary>上一版本内容</summary>
+    <div class="details-body"><pre class="code">{{ pkg.prev_content }}</pre></div>
+  </details>
+  {% endif %}
+</div>
+{% endblock %}

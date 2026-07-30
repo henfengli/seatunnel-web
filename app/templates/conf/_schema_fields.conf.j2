@@ -1,0 +1,3 @@
+      fields {
+{% for f in schema_fields %}        "{{ f.name | hq }}" = "{{ f.st_type | hq }}"
+{% endfor %}      }

@@ -1,0 +1,32 @@
+{# kafka 源对象选择片段（填充 #objects-box）：topic + proto 包 + message 联动。
+   数据库类源走 _source_dbs.html 两级级联。上下文：ds, objects, metadata_ready #}
+<div class="form-grid">
+  <div class="form-item">
+    <label for="f-source-ref">Topic <span class="req">*</span></label>
+    {% if objects %}
+    <input type="text" id="f-source-ref" name="source_ref" required list="topic-list" autocomplete="off"
+           value="{{ objects[0] if objects|length == 1 else '' }}"
+           placeholder="输入关键字筛选，共 {{ objects|length }} 个 topic">
+    <datalist id="topic-list">
+      {% for o in objects %}<option value="{{ o }}">{% endfor %}
+    </datalist>
+    {% else %}
+    <input type="text" id="f-source-ref" name="source_ref" required placeholder="手动输入 topic 名">
+    <div class="hint">元数据未就绪（{{ ds.metadata_status }}），请手动输入或先刷新元数据</div>
+    {% endif %}
+  </div>
+  <div class="form-item">
+    <label for="proto-select">Proto 包 <span class="req">*</span></label>
+    {# 页面加载后由 htmx 填充 option 列表 #}
+    <span hx-get="/api/protos/options" hx-trigger="load" hx-target="#proto-select" hx-swap="innerHTML"></span>
+    <select id="proto-select" name="proto_package_id" required
+            hx-get="/api/protos/messages" hx-include="#job-form" hx-trigger="change"
+            hx-target="#message-box" hx-swap="innerHTML">
+      <option value="">加载中…</option>
+    </select>
+  </div>
+  <div class="form-item" id="message-box">
+    <label>Message <span class="req">*</span></label>
+    <div class="hint">请先选择 proto 包</div>
+  </div>
+</div>

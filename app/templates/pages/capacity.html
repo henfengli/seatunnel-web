@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block page_title %}监控{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="btn-row">
+    <span class="muted">环境：</span>
+    {% for e in env_names %}
+    <a class="btn btn-sm {{ 'btn-primary' if cur_env == e }}" href="/monitor?env={{ e }}">{{ e }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if not cur_env %}
+<div class="card"><div class="hint">暂无环境，请先到「环境」页创建。</div></div>
+{% else %}
+
+<div class="card-grid">
+  {# ---- SeaTunnel 集群 ---- #}
+  <div class="card">
+    <h2>SeaTunnel 集群
+      <span class="dot {{ 'ok' if st.reachable else 'fail' }}" title="{{ st.error or '' }}"></span>
+    </h2>
+    {% if st.error and not st.reachable %}
+    <div class="alert alert-error">不可达：{{ st.error }}</div>
+    {% else %}
+    <dl class="kv">
+      <dt>版本</dt><dd class="mono">{{ st.version or '-' }}</dd>
+      <dt>workers</dt><dd>{{ st.workers }}</dd>
+      <dt>slot 已用/总数</dt>
+      <dd>{{ st.totalSlot - st.unassignedSlot }} / {{ st.totalSlot }}</dd>
+      <dt>作业</dt>
+      <dd>
+        <span class="badge badge-running">running {{ st.jobs.running }}</span>
+        <span class="badge badge-current">finished {{ st.jobs.finished }}</span>
+        <span class="badge badge-error">failed {{ st.jobs.failed }}</span>
+        <span class="badge badge-pending">pending {{ st.jobs.pending }}</span>
+        <span class="badge badge-stopped">cancelled {{ st.jobs.cancelled }}</span>
+        <div class="hint">计数来自 master 内存统计，集群重启会清零</div>
+      </dd>
+    </dl>
+    {% if st.error %}<div class="alert alert-error">{{ st.error }}</div>{% endif %}
+    {% if st.nodes %}
+    <table class="data mt">
+      <thead><tr><th>节点</th><th>角色</th><th>heap</th><th>CPU</th><th>线程</th><th>GC(minor/major)</th></tr></thead>
+      <tbody>
+        {% for n in st.nodes %}
+        <tr>
+          <td class="mono">{{ n.host }}</td>
+          <td>{{ 'Master' if n.isMaster else 'Worker' }}</td>
+          <td class="num {{ 'test-fail' if n.heapUsedPct > 80 }}">{{ '%.1f'|format(n.heapUsedPct) }}%</td>
+          <td class="num {{ 'test-fail' if n.loadProcess > 80 }}">{{ '%.1f'|format(n.loadProcess) }}%</td>
+          <td class="num">{{ n.threadCount }}</td>
+          <td class="num">{{ n.minorGc }} / {{ n.majorGc }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+  </div>
+
+  {# ---- Doris 集群 ---- #}
+  <div class="card">
+    <h2>Doris 集群
+      <span class="dot {{ 'ok' if dr.reachable else 'fail' }}" title="{{ dr.error or '' }}"></span>
+    </h2>
+    {% if dr.error and not dr.reachable %}
+    <div class="alert alert-error">不可达：{{ dr.error }}</div>
+    {% else %}
+    <dl class="kv">
+      <dt>FE alive</dt><dd>{{ dr.fe.alive }} / {{ dr.fe.total }}</dd>
+      <dt>BE alive</dt><dd>{{ dr.be.alive }} / {{ dr.be.total }}</dd>
+      <dt>tablet 总数</dt><dd class="num">{{ dr.be.tabletSum }}</dd>
+      <dt>最差磁盘</dt>
+      <dd>
+        <div class="pct-bar"><div class="pct-fill {{ 'pct-warn' if dr.be.worstUsedPct > 80 }}"
+             style="width: {{ [dr.be.worstUsedPct, 100] | min }}%"></div></div>
+        <span class="{{ 'test-fail' if dr.be.worstUsedPct > 80 }}">{{ '%.1f'|format(dr.be.worstUsedPct) }}%</span>
+      </dd>
+    </dl>
+    {% if dr.be.errNodes %}
+    <div class="alert alert-error">
+      异常节点：{% for n in dr.be.errNodes %}<div class="mono">{{ n.host }} — {{ n.errMsg or 'not alive' }}</div>{% endfor %}
+    </div>
+    {% endif %}
+    {% if dr.dbs %}
+    <table class="data mt">
+      <thead><tr><th>库</th><th>表数</th></tr></thead>
+      <tbody>
+        {% for d in dr.dbs %}<tr><td class="mono">{{ d.name }}</td><td class="num">{{ d.tables }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endif %}
+  </div>
+
+  {# ---- 作业汇总（本平台 DB） ---- #}
+  <div class="card">
+    <h2>作业汇总</h2>
+    <dl class="kv">
+      <dt>总作业数</dt><dd>{{ job_stats.total }}</dd>
+      <dt>运行中</dt><dd><span class="badge badge-running">{{ job_stats.running }}</span></dd>
+      <dt>失败/异常</dt><dd><span class="badge badge-error">{{ job_stats.failed }}</span></dd>
+      <dt>已停止</dt><dd><span class="badge badge-stopped">{{ job_stats.stopped }}</span></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="card">
+  <h2>速率趋势（RUNNING 作业合计）</h2>
+  <div class="btn-row">
+    {% for h, label in [(1, '1h'), (6, '6h'), (24, '24h')] %}
+    <button class="btn btn-sm env-range {{ 'btn-primary' if h == 24 }}" data-hours="{{ h }}">{{ label }}</button>
+    {% endfor %}
+  </div>
+  <div class="chart-box"><canvas id="env-qps-chart"></canvas></div>
+  <div id="env-chart-empty" class="hint" style="display:none;">暂无数据</div>
+  <div class="hint">由每分钟采集的累计计数差分得出；作业重启后计数归零的区间按 0 处理。</div>
+</div>
+
+<script src="/static/chart.umd.min.js"></script>
+<script>
+// 环境速率趋势图（Chart.js 本地引用，hx 不参與，纯 fetch JSON）
+(function () {
+  var chart = null;
+  var canvas = document.getElementById('env-qps-chart');
+  var empty = document.getElementById('env-chart-empty');
+  function load(hours) {
+    fetch('/api/monitor/env-series?env={{ cur_env }}&hours=' + hours)
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        // 样本不足（<2）时不画空轴，显示暂无数据
+        if (!d.ts || d.ts.length === 0) {
+          canvas.style.display = 'none';
+          empty.style.display = '';
+          if (chart) { chart.destroy(); chart = null; }
+          return;
+        }
+        canvas.style.display = '';
+        empty.style.display = 'none';
+        draw(d);
+      });
+  }
+  function draw(d) {
+    var ctx = canvas.getContext('2d');
+    if (chart) chart.destroy();
+    chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: d.ts,
+        datasets: [
+          { label: 'source QPS', data: d.source_qps, borderColor: '#3b82f6', pointRadius: 0, borderWidth: 1.5 },
+          { label: 'sink QPS', data: d.sink_qps, borderColor: '#22c55e', pointRadius: 0, borderWidth: 1.5 }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+                 scales: { x: { ticks: { maxTicksLimit: 12 } }, y: { beginAtZero: true } } }
+    });
+  }
+  document.querySelectorAll('.env-range').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.env-range').forEach(function (x) { x.classList.remove('btn-primary'); });
+      this.classList.add('btn-primary');
+      load(this.dataset.hours);
+    });
+  });
+  load(24);
+})();
+</script>
+{% endif %}
+{% endblock %}

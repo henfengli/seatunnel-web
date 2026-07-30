@@ -1,0 +1,69 @@
+env {
+  job.mode = "STREAMING"
+  parallelism = {{ parallelism }}
+  checkpoint.interval = {{ checkpoint_interval }}
+}
+source {
+  Kafka {
+    bootstrap.servers = "{{ ds.servers | hq }}"
+    topic = "{{ topic | hq }}"
+    consumer.group = "{{ (options.get('consumer_group') or job_name) | hq }}"
+    start_mode = "{{ start_mode }}"
+    plugin_output = "st_src"
+    format = protobuf
+    protobuf_message_name = "{{ message_name | hq }}"
+    protobuf_schema = """
+{{ proto_content | indent(6, true) }}
+    """
+    schema = {
+{% include "_schema_fields.conf.j2" %}
+    }
+    kafka.config = {
+      fetch.max.bytes = {{ options.get('fetch_max_bytes', 5242880) }}
+      max.poll.records = {{ options.get('max_poll_records', 500) }}
+{% if ds.get('security_protocol') and ds.get('security_protocol') != 'PLAINTEXT' %}
+      security.protocol = {{ ds.get('security_protocol') }}
+{% if ds.get('security_protocol', '').startswith('SASL') %}
+{% set jaas_login_module = 'org.apache.kafka.common.security.plain.PlainLoginModule' if ds.get('sasl_mechanism', 'PLAIN') == 'PLAIN' else 'org.apache.kafka.common.security.scram.ScramLoginModule' %}
+      sasl.mechanism = {{ ds.get('sasl_mechanism', 'PLAIN') }}
+      sasl.jaas.config = "{{ jaas_login_module }} required username=\"{{ ds.get('sasl_username', '') | replace('\\', '\\\\') | replace('"', '\\"') }}\" password=\"{{ ds.get('sasl_password', '') | replace('\\', '\\\\') | replace('"', '\\"') }}\";"
+{% endif %}
+{% endif %}
+{% for line in kafka_extra_config %}
+      {{ line }}
+{% endfor %}
+    }
+  }
+}
+{% if kafka_ts_enabled %}
+transform {
+  # 从 kafka 行元数据提取消息时间戳为物理列 kafka_ts（2.3.13 原生支持，无需补丁）
+  Metadata {
+    plugin_input = "st_src"
+    plugin_output = "st_ts"
+    metadata_fields = {
+      EventTime = kafka_ts
+    }
+  }
+}
+{% endif %}
+{% if sql_select %}
+transform {
+  # 嵌套 message 拍平：点号访问 ROW 子字段（array<row> 不支持，保持 VARIANT 整列）
+  Sql {
+    plugin_input = "{{ 'st_ts' if kafka_ts_enabled else 'st_src' }}"
+    plugin_output = "st_flat"
+    query = """
+    SELECT {{ sql_select | join(', ') }} FROM {{ 'st_ts' if kafka_ts_enabled else 'st_src' }}
+    """
+  }
+}
+{% endif %}
+{% if sql_select %}
+{% set sink_plugin_input = "st_flat" %}
+{% elif kafka_ts_enabled %}
+{% set sink_plugin_input = "st_ts" %}
+{% endif %}
+sink {
+{% include "_doris_sink.conf.j2" %}
+}

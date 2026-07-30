@@ -1,0 +1,28 @@
+{# 目标 Doris 库/表选择片段（填充 #doris-target-box）。
+   库/表均用 input+datalist：可选已有，也可直接输新名（平台自动建库/建表）。
+   上下文：dbs, error, default_db #}
+<div class="form-grid">
+  <div class="form-item">
+    <label for="f-doris-db">目标 Doris 库 <span class="req">*</span></label>
+    <input type="text" id="f-doris-db" name="doris_db" list="doris-db-list" required
+           value="{{ dbs[0] if dbs|length == 1 else '' }}" autocomplete="off"
+           placeholder="{{ '输入库名（Doris 暂不可达）' if error else '选择或输入库名' }}"
+           hx-get="/api/envs/doris-tables" hx-include="#job-form" hx-trigger="load, input"
+           hx-target="#doris-table-box" hx-swap="innerHTML">
+    <datalist id="doris-db-list">
+      {% for d in dbs %}<option value="{{ d }}">{% endfor %}
+    </datalist>
+    {% if error %}
+    <div class="hint">目标 Doris 暂不可达（{{ error }}），请手动输入库名</div>
+    {% elif dbs %}
+    <div class="hint">可下拉选已有库，或直接输入新库名（自动建库）</div>
+    {% endif %}
+  </div>
+  <div class="form-item">
+    <label for="f-doris-table">目标 Doris 表 <span class="req">*</span></label>
+    <input type="text" id="f-doris-table" name="doris_table" list="doris-table-list" required
+           value="" autocomplete="off" placeholder="默认按 {源类型}_{源表名} 生成">
+    <span id="doris-table-box"><datalist id="doris-table-list"></datalist></span>
+    <div class="hint">可下拉选已有表，或直接输入新表名（平台自动建表）</div>
+  </div>
+</div>

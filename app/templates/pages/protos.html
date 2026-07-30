@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block page_title %}Proto 包{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between;">
+    <h2 style="margin:0;">Proto 包列表</h2>
+    <a class="btn btn-primary" href="/protos/new">新建 Proto 包</a>
+  </div>
+</div>
+<div class="card">
+  {% if pkgs %}
+  <table class="data">
+    <thead>
+      <tr><th>名称</th><th>来源方式</th><th>版本</th><th>状态</th><th>最近更新</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+      {% for p in pkgs %}
+      <tr>
+        <td><a href="/protos/{{ p.id }}">{{ p.name }}</a></td>
+        <td class="mono" style="max-width:320px; word-break:break-all;">
+          {% if p.origin == 'upload' %}文件上传
+          {% elif p.origin == 'paste' %}手动粘贴
+          {% else %}URL 拉取{% if p.source_url %}<br><span class="dim">{{ p.source_url }}</span>{% endif %}{% endif %}
+        </td>
+        <td class="mono">{{ p.current_version or '-' }}</td>
+        <td>
+          <span class="badge badge-{{ p.status }}"
+                {% if p.error %}title="{{ p.error }}"{% endif %}>{{ p.status }}</span>
+        </td>
+        <td class="mono">{{ p.updated_at|dt }}</td>
+        <td>
+          <div class="btn-row">
+            {% if p.source_url %}
+            <button class="btn btn-sm" hx-post="/protos/{{ p.id }}/poll" hx-swap="none"
+                    hx-confirm="立即从来源 URL 拉取 {{ p.name }}？">立即拉取</button>
+            {% endif %}
+            <a class="btn btn-sm" href="/protos/{{ p.id }}/edit">编辑</a>
+            <button class="btn btn-sm btn-danger" hx-delete="/protos/{{ p.id }}" hx-swap="none"
+                    hx-confirm="确定删除 proto 包 {{ p.name }}？（有作业引用时会被拒绝）">删除</button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="hint">暂无 proto 包，点击右上角「新建 Proto 包」。</div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,83 @@
+{# 元数据树片段：按数据源类型渲染 库->表->字段 三级缩进（kafka 为 topics 列表）。
+   上下文变量：ds（Datasource）、md（metadata_dict） #}
+{% if ds.type == 'kafka' %}
+  <h3>Topics（{{ md.get('topics', [])|length }}）</h3>
+  <details>
+    <summary>展开/折叠</summary>
+    <ul class="tree root">
+      {% for t in md.get('topics', []) %}<li class="leaf mono">{{ t }}</li>{% endfor %}
+    </ul>
+  </details>
+  {% if md.get('consumer_groups') %}
+  <h3>消费组（{{ md['consumer_groups']|length }}）</h3>
+  <details>
+    <summary>展开/折叠</summary>
+    <ul class="tree root">
+      {% for g in md['consumer_groups'] %}<li class="leaf mono">{{ g }}</li>{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
+{% elif ds.type == 'postgresql' %}
+  {% for s in md.get('schemas', []) %}
+  <details>
+    <summary>schema: <span class="mono">{{ s.name }}</span>（{{ s.tables|length }} 张表）</summary>
+    <ul class="tree">
+      {% for t in s.tables %}
+      <li>
+        <details>
+          <summary class="node mono">{{ t.name }} <span class="type-tag">({{ t.columns|length }} 列)</span></summary>
+          <ul class="tree">
+            {% for c in t.columns %}
+            <li class="leaf">{{ c.name }} <span class="type-tag">{{ c.udt or c.type }}</span></li>
+            {% endfor %}
+          </ul>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+
+{% elif ds.type == 'mongodb' %}
+  {% for d in md.get('databases', []) %}
+  <details>
+    <summary>库: <span class="mono">{{ d.name }}</span>（{{ d.collections|length }} 个集合）</summary>
+    <ul class="tree">
+      {% for c in d.collections %}
+      <li>
+        <details>
+          <summary class="node mono">{{ c.name }} <span class="type-tag">({{ c.fields|length }} 字段)</span></summary>
+          <ul class="tree">
+            {% for f in c.fields %}
+            <li class="leaf">{{ f.name }} <span class="type-tag">{{ f.type }}</span></li>
+            {% endfor %}
+          </ul>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+
+{% elif ds.type == 'doris' %}
+  {% for d in md.get('databases', []) %}
+  <details>
+    <summary>库: <span class="mono">{{ d.name }}</span>（{{ d.tables|length }} 张表）</summary>
+    <ul class="tree">
+      {% for t in d.tables %}
+      <li>
+        <details>
+          <summary class="node mono">{{ t.name }} <span class="type-tag">({{ t.columns|length }} 列)</span></summary>
+          <ul class="tree">
+            {% for c in t.columns %}
+            <li class="leaf">{{ c.name }} <span class="type-tag">{{ c.type }}</span></li>
+            {% endfor %}
+          </ul>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+{% endif %}

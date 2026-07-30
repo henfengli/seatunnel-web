@@ -1,0 +1,34 @@
+env {
+  job.mode = "BATCH"
+  parallelism = {{ parallelism }}
+}
+source {
+  Doris {
+    fenodes = "{{ ds.fenodes | hq }}"
+    query-port = {{ ds.get('query_port', 9030) }}
+    database = "{{ source_db }}"
+    table = "{{ source_table }}"
+    username = "{{ (ds.get('username') or ds.get('user')) | hq }}"
+    password = "{{ ds.get('password', '') | hq }}"
+    doris.read.field = "{% for f in schema_fields %}{{ f.name }}{% if not loop.last %},{% endif %}{% endfor %}"
+    plugin_output = "st_src"
+  }
+}
+{% if sql_select %}
+transform {
+  # ms_epoch 列按数值量级缩放 epoch（SeaTunnel SQL transform 原生 CASE，ZetaSQLFunction 验证）
+  Sql {
+    plugin_input = "st_src"
+    plugin_output = "st_flat"
+    query = """
+    SELECT {{ sql_select | join(', ') }} FROM st_src
+    """
+  }
+}
+{% endif %}
+{% if sql_select %}
+{% set sink_plugin_input = "st_flat" %}
+{% endif %}
+sink {
+{% include "_doris_sink.conf.j2" %}
+}

@@ -1,0 +1,105 @@
+{# 字段映射预览片段（填充 #mapping-box）。目标库/表输入框在第 4 步（_doris_target.html）。
+   上下文：mapping, error, hint, default_table, ttl_column（当前选中的 TTL 列，可无） #}
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+{% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
+{% if mapping %}
+{# 顺带刷新高级选项里的 TTL 时间字段下拉（oob）：DATE/DATETIME 列 + BIGINT（epoch 毫秒）+ STRING（按 DATE 存储）#}
+<select id="f-ttl-col" hx-swap-oob="innerHTML">
+  {% set ttl_cols = (mapping | selectattr('doris_type', 'datetype') | list)
+                    + (mapping | selectattr('doris_type', 'equalto', 'BIGINT') | list)
+                    + (mapping | selectattr('doris_type', 'equalto', 'STRING') | list) %}
+  {% if ttl_cols %}
+  <option value="">永久保留（不启用）</option>
+  {% for m in ttl_cols %}
+  <option value="{{ m.doris_col }}" {{ 'selected' if ttl_column and ttl_column == m.doris_col }}>{{ m.doris_col }}{{ '（epoch 毫秒）' if m.doris_type == 'BIGINT' }}{{ '（按 DATE 存储）' if m.doris_type == 'STRING' }}</option>
+  {% endfor %}
+  {% else %}
+  <option value="" disabled>无 DATE/DATETIME/BIGINT/STRING 列</option>
+  {% endif %}
+</select>
+<table class="data">
+  <thead>
+    <tr><th>启用</th><th>源字段</th><th>SeaTunnel 类型</th><th>Doris 列名（可编辑）</th><th>Doris 类型（可编辑）</th><th>标记</th><th>聚合（AGGREGATE）</th><th>备注</th></tr>
+  </thead>
+  <tbody>
+    {% set ns = namespace(flat_shown=[]) %}
+    {% for m in mapping %}
+    <tr>
+      <td class="cb-cell">
+        <input type="hidden" name="map_enabled" value="1">
+        {% if not m.get('sink_only') %}
+        <input type="checkbox" checked title="取消勾选 = 该字段不进作业"
+               onchange="this.previousElementSibling.value=this.checked?'1':'0'">
+        {% endif %}
+      </td>
+      <td class="mono">{{ m.get('src_path', m.source) }}
+        {% if m.st_type.startswith('{') %}
+        {# 嵌套 message（未拍平）：可切换拍平展开 #}
+        <select name="flatten_{{ m.source }}" class="flatten-sel"
+                hx-get="/api/jobs/preview-mapping" hx-include="#job-form" hx-trigger="change"
+                hx-target="#mapping-box" hx-swap="innerHTML">
+          <option value="" selected>VARIANT 整列</option>
+          <option value="1">拍平展开</option>
+        </select>
+        {% elif m.get('src_root') and m.src_root not in ns.flat_shown %}
+        {% set ns.flat_shown = ns.flat_shown + [m.src_root] %}
+        <select name="flatten_{{ m.src_root }}" class="flatten-sel"
+                hx-get="/api/jobs/preview-mapping" hx-include="#job-form" hx-trigger="change"
+                hx-target="#mapping-box" hx-swap="innerHTML">
+          <option value="">VARIANT 整列</option>
+          <option value="1" selected>拍平展开</option>
+        </select>
+        {% endif %}
+        <input type="hidden" name="map_source" value="{{ m.source }}">
+        <input type="hidden" name="map_nested" value="{{ '1' if m.nested else '0' }}">
+        <input type="hidden" name="map_note" value="{{ m.get('note', '') }}">
+        <input type="hidden" name="map_sink_only" value="{{ '1' if m.get('sink_only') else '0' }}">
+        <input type="hidden" name="map_default" value="{{ m.get('default', '') }}">
+        <input type="hidden" name="map_src_path" value="{{ m.get('src_path', '') }}">
+        <input type="hidden" name="map_src_root" value="{{ m.get('src_root', '') }}">
+        <input type="hidden" name="map_src_root_type" value="{{ m.get('src_root_type', '') }}">
+      </td>
+      <td class="mono">{{ m.st_type }}
+        <input type="hidden" name="map_st_type" value="{{ m.st_type }}">
+      </td>
+      <td><input type="text" name="map_doris_col" value="{{ m.doris_col }}" required></td>
+      <td><input type="text" name="map_doris_type" value="{{ m.doris_type }}" required></td>
+      <td class="cb-cell">
+        <input type="hidden" name="map_flags"
+               value="{{ ['key' if m.get('is_key'), 'ms_epoch' if m.get('ms_epoch')] | select | join(',') }}">
+        {% if not m.get('sink_only') %}
+        <span class="key-cb-wrap" title="key 列（UNIQUE/AGGREGATE 模型）">
+          <input type="checkbox" {{ 'checked' if m.get('is_key') }}
+                 onchange="this.parentNode.previousElementSibling.value=this.checked?'key':''">
+          <span class="muted">key</span>
+        </span>
+        {% endif %}
+      </td>
+      <td>
+        {% if m.get('sink_only') %}
+        <input type="hidden" name="map_agg" value="">
+        {% else %}
+        {% set cur_agg = m.get('agg', 'REPLACE') %}
+        <select name="map_agg" class="agg-sel" title="聚合函数（仅 AGGREGATE 模型生效）">
+          {% for a in ['REPLACE', 'SUM', 'MIN', 'MAX'] %}
+          <option value="{{ a }}" {{ 'selected' if cur_agg == a }}>{{ a }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+      </td>
+      <td class="muted">{{ m.get('note', '') }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<div class="hint mt">共 {{ mapping|length }} 个字段；嵌套字段以 VARIANT/STRING 落列。</div>
+{% if default_table %}
+<script>
+// 目标表名默认值 {源类型}_{源表名}：仅在用户未填写时填入，不覆盖手输
+(function () {
+  var el = document.getElementById('f-doris-table');
+  if (el && !el.value) el.value = {{ default_table | tojson }};
+})();
+</script>
+{% endif %}
+{% endif %}

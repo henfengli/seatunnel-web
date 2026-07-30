@@ -1,0 +1,35 @@
+env {
+  job.mode = "BATCH"
+  parallelism = {{ parallelism }}
+}
+source {
+  Jdbc {
+    driver = "org.postgresql.Driver"
+    url = "jdbc:postgresql://{{ ds.host | hq }}:{{ ds.get('port', 5432) }}/{{ (ds.get('db') or ds.get('database')) | hq }}"
+    user = "{{ (ds.get('username') or ds.get('user')) | hq }}"
+    password = "{{ ds.get('password', '') | hq }}"
+    query = "SELECT {% for f in schema_fields %}\"{{ f.name | replace('"', '""') }}\"{% if not loop.last %}, {% endif %}{% endfor %} FROM \"{{ source_db | replace('"', '""') | hq }}\".\"{{ source_table | replace('"', '""') | hq }}\""
+    plugin_output = "st_src"
+    schema = {
+{% include "_schema_fields.conf.j2" %}
+    }
+  }
+}
+{% if sql_select %}
+transform {
+  # ms_epoch 列按数值量级缩放 epoch（SeaTunnel SQL transform 原生 CASE，ZetaSQLFunction 验证）
+  Sql {
+    plugin_input = "st_src"
+    plugin_output = "st_flat"
+    query = """
+    SELECT {{ sql_select | join(', ') }} FROM st_src
+    """
+  }
+}
+{% endif %}
+{% if sql_select %}
+{% set sink_plugin_input = "st_flat" %}
+{% endif %}
+sink {
+{% include "_doris_sink.conf.j2" %}
+}

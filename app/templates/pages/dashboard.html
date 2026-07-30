@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block page_title %}总览{% endblock %}
+{% block content %}
+
+{% if bad_jobs %}
+<div class="alert alert-error alert-block">
+  <strong>异常作业提醒（{{ bad_jobs|length }}）：</strong>
+  {% for j in bad_jobs %}
+  <div>
+    <a href="/jobs/{{ j.id }}">{{ j.name }}</a>（{{ j.env }}）
+    <span class="badge badge-{{ j.status|lower }}">{{ j.status }}</span>
+    {% if j.status_detail %}<span class="muted">{{ j.status_detail[:120] }}</span>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="stat-grid">
+  <a class="stat-card" href="/jobs">
+    <div class="stat-num">{{ stats.jobs }}</div><div class="stat-label">总作业</div>
+  </a>
+  <a class="stat-card" href="/jobs?status=RUNNING">
+    <div class="stat-num text-ok">{{ stats.running }}</div><div class="stat-label">运行中</div>
+  </a>
+  <a class="stat-card" href="/jobs?status=FAILED">
+    <div class="stat-num {{ 'text-fail' if stats.failed }}">{{ stats.failed }}</div><div class="stat-label">异常</div>
+  </a>
+  <a class="stat-card" href="/jobs?status=STOPPED">
+    <div class="stat-num">{{ stats.stopped }}</div><div class="stat-label">已停止</div>
+  </a>
+  <a class="stat-card" href="/datasources">
+    <div class="stat-num">{{ stats.datasources }}</div><div class="stat-label">数据源</div>
+  </a>
+  <a class="stat-card" href="/protos">
+    <div class="stat-num">{{ stats.protos }}</div><div class="stat-label">Proto 包</div>
+  </a>
+</div>
+
+{% if env_cards %}
+<div class="card-grid">
+  {% for c in env_cards %}
+  <div class="card env-card">
+    <div class="env-head">
+      <span class="dot {{ c.health }}" title="{{ c.health_title }}"></span>
+      <h2>{{ c.name }}</h2>
+      <span class="env-links">
+        <a href="/monitor?env={{ c.name }}">监控</a>
+        <a href="/environments/{{ c.id }}/logs">日志</a>
+        <a href="/environments/{{ c.id }}/edit">编辑</a>
+      </span>
+    </div>
+    <div class="env-stats">
+      <div><b>{{ c.running_count }}</b>运行中</div>
+      <div><b>{{ c.job_count }}</b>总作业</div>
+      <div class="{{ 'test-fail' if c.failed_count }}"><b>{{ c.failed_count }}</b>异常</div>
+    </div>
+    <div class="env-meta">
+      <div><span class="muted">SeaTunnel</span><span class="mono">{{ c.masters|join(', ') or '-' }}</span></div>
+      <div><span class="muted">Doris FE</span><span class="mono">{{ c.fenodes or '-' }}</span></div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card"><div class="hint">还没有环境。先到「环境」页创建一套环境，再建数据源和作业。</div></div>
+{% endif %}
+
+<div class="card">
+  <h2>最近事件（10 条）</h2>
+  {% if recent_events %}
+  <table class="data">
+    <thead><tr><th>时间</th><th>作业</th><th>事件</th><th>详情</th></tr></thead>
+    <tbody>
+      {% for ev in recent_events %}
+      <tr>
+        <td class="mono">{{ ev.created_at|dt }}</td>
+        <td><a href="/jobs/{{ ev.job_id }}">{{ ev.job.name if ev.job else '#' ~ ev.job_id }}</a></td>
+        <td>{{ ev.event }}</td>
+        <td class="cell-clip" style="max-width:640px;" title="{{ ev.detail or '' }}">{{ ev.detail or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="hint">暂无事件。先创建数据源和作业。</div>
+  {% endif %}
+</div>
+
+{% endblock %}

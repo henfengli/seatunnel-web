@@ -1,0 +1,17 @@
+{# message 选择片段（填充 #message-box）。input+datalist：可输入筛选。上下文：messages #}
+<label for="f-message">Message <span class="req">*</span></label>
+{% if messages %}
+<input type="text" id="f-message" name="message_name" required list="message-list" autocomplete="off"
+       value="{{ messages[0] if messages|length == 1 else '' }}"
+       placeholder="输入关键字筛选，共 {{ messages|length }} 个"
+       {% if not batch %}
+       hx-get="/api/jobs/preview-mapping" hx-include="#job-form"
+       hx-trigger="{{ 'load, change' if messages|length == 1 else 'change' }}"
+       hx-target="#mapping-box" hx-swap="innerHTML"
+       {% endif %}>
+<datalist id="message-list">
+  {% for m in messages %}<option value="{{ m }}">{% endfor %}
+</datalist>
+{% else %}
+<div class="alert alert-error">该 proto 包没有可解析的顶层 message，请检查解析状态</div>
+{% endif %}

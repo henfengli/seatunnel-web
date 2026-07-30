@@ -1,0 +1,25 @@
+  Doris {
+{% if sink_plugin_input %}
+    plugin_input = "{{ sink_plugin_input }}"
+{% endif %}
+    fenodes = "{{ env.doris.fenodes | hq }}"
+    query-port = {{ env.doris.query_port }}
+    database = "{{ doris_db }}"
+    table = "{{ doris_table }}"
+    username = "{{ env.doris.username | hq }}"
+    password = "{{ env.doris.password | hq }}"
+    sink.label-prefix = "{{ job_name }}"
+    sink.enable-2pc = "true"
+    sink.max-retries = 3
+    schema_save_mode = "ERROR_WHEN_SCHEMA_NOT_EXIST"
+    data_save_mode = "APPEND_DATA"
+    doris.config = {
+      format = "json"
+      read_json_by_line = "true"
+{% if doris_jsonpaths %}
+      jsonpaths = "[{{ doris_jsonpaths | join(', ') }}]"
+      columns = "{{ doris_columns | join(', ') }}"
+{% endif %}
+    }
+{% if enable_delete %}    sink.enable-delete = "true"
+{% endif %}  }

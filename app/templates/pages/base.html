@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SeaTunnel 作业管理平台{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">SeaTunnel 平台<small>数据同步作业管理</small></div>
+    <nav>
+      <a href="/" class="{{ 'active' if active == 'dashboard' }}">总览</a>
+      <a href="/environments" class="{{ 'active' if active == 'environments' }}">环境</a>
+      <a href="/datasources" class="{{ 'active' if active == 'datasources' }}">数据源</a>
+      <a href="/protos" class="{{ 'active' if active == 'protos' }}">Proto包</a>
+      <a href="/jobs" class="{{ 'active' if active == 'jobs' }}">作业</a>
+      <a href="/monitor" class="{{ 'active' if active == 'monitor' }}">监控</a>
+    </nav>
+  </aside>
+  <div class="main">
+    <div class="topbar">
+      <div class="page-title">{% block page_title %}{% endblock %}</div>
+      <div class="env-tags">
+        {% for e in all_env_names() %}<span class="env-tag">{{ e }}</span>{% endfor %}
+      </div>
+    </div>
+    <div class="content">
+      {# flash 消息：由 goto() 通过 query 参数传递 #}
+      {% set flash = request.query_params.get('msg') %}
+      {% if flash %}
+      <div class="alert {{ 'alert-error' if request.query_params.get('msg_type') == 'error' else 'alert-success' }}">{{ flash }}</div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block page_title %}重建目标表：{{ job.name }}{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between;">
+    <h2 style="margin:0;">重建 {{ job.doris_db }}.{{ job.doris_table }}</h2>
+    <a class="btn btn-sm" href="/jobs/{{ job.id }}">返回作业详情</a>
+  </div>
+  {% if error %}
+  <div class="alert alert-error" style="margin-top:10px;">{{ error }}（仍可尝试删表重建；数据迁移不可用）</div>
+  {% endif %}
+  {% for e in errors %}
+  <div class="alert alert-error" style="margin-top:10px;">{{ e }}</div>
+  {% endfor %}
+</div>
+
+{% if compat and not compat.exists %}
+<div class="card">
+  <div class="hint">目标表不存在，无需重建——直接提交作业即可按当前配置自动建表。</div>
+</div>
+{% endif %}
+
+{% if compat and compat.exists %}
+<div class="card">
+  <h2>现状 vs 新配置</h2>
+  <dl class="kv">
+    <dt>表模型</dt>
+    <dd class="mono">现有 {{ compat.show.model if compat.show else '?' }} → 新 {{ job.options.get('table_model', 'DUPLICATE') }}
+      {% if compat.show and compat.show.model != job.options.get('table_model', 'DUPLICATE') %}<span class="test-fail">（不一致，必须重建）</span>{% endif %}</dd>
+    {% if compat.show %}<dt>key 列</dt><dd class="mono">{{ compat.show.key_cols }}</dd>{% endif %}
+    <dt>动态分区（TTL）</dt>
+    <dd class="mono">
+      {% if compat.show and compat.show.ttl %}现有 start={{ compat.show.ttl.start }} unit={{ compat.show.ttl.unit }}
+      {% elif compat.show and compat.show.partitioned %}现有已分区（未启用动态分区）
+      {% else %}现有未分区{% endif %}
+      {% if job.options.get('ttl_num') %} → 新 {{ -job.options.get('ttl_num') }} / {{ job.options.get('ttl_unit', 'DAY') }}{% endif %}
+    </dd>
+    {% if compat.show %}<dt>分桶数</dt><dd class="mono">{{ compat.show.buckets }}</dd>{% endif %}
+    <dt>兼容性判定</dt>
+    <dd>
+      {% if compat.level == 'recreate' %}<span class="test-fail">必须重建（在线演进无法覆盖）</span>
+      {% elif compat.level == 'online' %}<span class="test-ok">可在线演进（提交/更新时自动执行，无需重建）</span>
+      {% else %}<span class="test-ok">结构一致</span>{% endif %}
+    </dd>
+  </dl>
+  {% if compat.reasons %}
+  <div class="alert alert-error">必须重建的原因：{% for r in compat.reasons %}<div>· {{ r }}</div>{% endfor %}</div>
+  {% endif %}
+  {% if compat.online %}
+  <div class="hint">在线可完成（提交/更新并重启时自动执行，不必重建）：{% for a in compat.online %}<div>· {{ a }}</div>{% endfor %}</div>
+  {% endif %}
+  {% if compat.notes %}
+  <div class="hint">{% for n in compat.notes %}<div>· {{ n }}</div>{% endfor %}</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>方式一：删表重建（数据全部丢失）</h2>
+  <div class="hint">DROP 原表并按新配置建空表。适合测试环境或可从源端全量重放的场景。</div>
+  {% if job.status == 'RUNNING' %}
+  <div class="alert alert-error" style="margin-top:8px;">作业运行中，请先停止；或选方式二（数据迁移会自动编排停启）。</div>
+  {% else %}
+  <form method="post" action="/jobs/{{ job.id }}/recreate-table" style="margin-top:8px;">
+    <input type="hidden" name="mode" value="drop">
+    <button type="submit" class="btn btn-danger"
+            onclick="return confirm('危险：将删除 {{ job.doris_db }}.{{ job.doris_table }} 及全部数据并重建空表，确定？')">删表重建（数据丢失）</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>方式二：数据迁移重建（保留数据）</h2>
+  <div class="hint">
+    流程：{% if job.status == 'RUNNING' %}作业带 savepoint 停止 → {% endif %}原表 RENAME 为 tmp_{{ job.doris_table }} → 按新配置建新表 → INSERT SELECT 迁移 → 行数核对 → 删除 tmp 表{% if job.status == 'RUNNING' %} → 带 savepoint 恢复作业{% endif %}。
+    kafka 位点由 savepoint 保留，迁移期间新到的数据恢复后照常消费，不丢数；迁移失败自动回滚为原表。
+    {% if job.options.get('table_model') in ['UNIQUE', 'AGGREGATE'] %}注意：新表为 {{ job.options.get('table_model') }} 模型，重复 key 行会被合并，行数可能少于旧表（属预期）。{% endif %}
+  </div>
+
+  {% if plan %}
+  <form method="post" action="/jobs/{{ job.id }}/recreate-table" style="margin-top:10px;">
+    <input type="hidden" name="mode" value="migrate">
+    <h3>逐列迁移方案（冲突项请决策）</h3>
+    <table class="data">
+      <thead><tr><th>新表列</th><th>类型</th><th>方案</th><th>决策</th></tr></thead>
+      <tbody>
+        {% for p in plan %}
+        <tr>
+          <td class="mono">{{ p.col }}</td>
+          <td class="mono">{{ p.old_type ~ ' → ' if p.old_type else '(新列) ' }}{{ p.type }}</td>
+          <td>
+            {% if p.kind == 'same' %}<span class="test-ok">直接迁移</span>
+            {% elif p.kind == 'cast_safe' %}<span class="test-ok">自动 CAST（安全转换）</span>
+            {% elif p.kind == 'ms_epoch' %}<span class="test-ok">自动 from_millisecond（epoch 毫秒 → 时间）</span>
+            {% elif p.kind == 'cast_risky' %}<span class="test-fail">收窄/不可直接转换</span>
+            {% else %}<span class="test-fail">旧表没有该列</span>{% endif %}
+          </td>
+          <td>
+            {% if p.kind == 'cast_risky' %}
+            <div class="btn-row">
+              <select name="conv_{{ p.col }}">
+                <option value="cast" selected>强制 CAST（可能截断/失败）</option>
+                <option value="const">填常量 →</option>
+              </select>
+              <input type="text" name="fillv_{{ p.col }}" placeholder="如 0 或 'N/A'，留空 NULL" style="width:180px;">
+            </div>
+            {% elif p.kind == 'missing' %}
+            <input type="text" name="fill_{{ p.col }}" style="width:220px;"
+                   placeholder="{{ '默认 ' ~ p.default if p.default else '默认 NULL' }}（可填 数字/'字符串'/NULL）">
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if dropped %}
+    <div class="hint" style="margin-top:6px;">以下旧表列不在新配置中，迁移后被丢弃：<span class="mono">{{ dropped|join(', ') }}</span></div>
+    {% endif %}
+    <div class="form-actions" style="margin-top:10px;">
+      <button type="submit" class="btn btn-primary"
+              onclick="return confirm('确认按以上方案迁移？{% if job.status == 'RUNNING' %}作业将短暂停止并在完成后自动恢复。{% endif %}')">开始数据迁移</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

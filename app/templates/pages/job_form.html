@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+{% set is_edit = job is not none %}
+{% block page_title %}{{ '编辑作业：' ~ job.name if is_edit else '新建作业' }}{% endblock %}
+{% block content %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+{% if is_edit %}
+<div class="alert alert-block">保存只更新配置，不会自动重启；请在详情页点击「更新并重启」使新配置生效{{ '（作业正在运行）' if job.status == 'RUNNING' }}。</div>
+{% endif %}
+
+<form id="job-form" method="post" action="{{ '/jobs/' ~ job.id ~ '/edit' if is_edit else '/jobs' }}">
+  {% if is_edit %}
+  {# 编辑模式：源相关字段不可改，隐藏域保留供「重新生成映射」与服务端校验 #}
+  <input type="hidden" name="env" value="{{ job.env }}">
+  <input type="hidden" name="source_type" value="{{ job.source_type }}">
+  <input type="hidden" name="datasource_id" value="{{ job.datasource_id }}">
+  <input type="hidden" name="source_ref" value="{{ job.source_ref }}">
+  {% if job.proto_package_id %}<input type="hidden" name="proto_package_id" value="{{ job.proto_package_id }}">{% endif %}
+  {% if job.message_name %}<input type="hidden" name="message_name" value="{{ job.message_name }}">{% endif %}
+  {% endif %}
+
+  <fieldset>
+    <legend>1. 基本信息</legend>
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-name">作业名称 <span class="req">*</span></label>
+        {% if is_edit %}
+        <input type="text" id="f-name" value="{{ job.name }}" disabled>
+        <div class="hint">名称不可修改（改名会破坏消费组/savepoint 连续性），如需改名请新建作业</div>
+        {% else %}
+        <input type="text" id="f-name" name="name" required value="{{ form.get('name', '') }}"
+               placeholder="如 trade_kafka_to_doris">
+        {% endif %}
+      </div>
+      <div class="form-item">
+        <label for="f-env">环境 <span class="req">*</span></label>
+        {% if is_edit %}
+        <input type="text" id="f-env" value="{{ job.env }}" disabled>
+        {% else %}
+        {# 未选择过时默认选中第一个环境 #}
+        {% set cur_env = form.get('env') or (env_names[0] if env_names else '') %}
+        <select id="f-env" name="env" required>
+          {% if not env_names %}<option value="">请先到「环境」页创建环境</option>{% endif %}
+          {% for e in env_names %}
+          <option value="{{ e }}" {{ 'selected' if cur_env == e }}>{{ e }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+      </div>
+      <div class="form-item">
+        <label for="f-tags">标签（逗号分隔）</label>
+        <input type="text" id="f-tags" name="tags"
+               value="{{ form.get('tags', job.tags if is_edit else '') }}"
+               placeholder="如 cdc,实时">
+      </div>
+      <div class="form-item">
+        <label for="f-source-type">源类型 <span class="req">*</span></label>
+        {% if is_edit %}
+        <input type="text" id="f-source-type" value="{{ job.source_type }}" disabled>
+        {% else %}
+        <select id="f-source-type" name="source_type" required>
+          <option value="">请选择源类型</option>
+          {% for t in ds_types %}
+          <option value="{{ t }}" {{ 'selected' if form.get('source_type') == t }}>{{ t }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+      </div>
+    </div>
+  </fieldset>
+
+  {% if is_edit %}
+  <fieldset>
+    <legend>2. 数据源与源对象（不可修改）</legend>
+    <dl class="kv">
+      <dt>数据源</dt>
+      <dd><a href="/datasources/{{ job.datasource_id }}">{{ job.datasource.name }}</a>（{{ job.source_type }}）</dd>
+      <dt>源对象</dt>
+      <dd class="mono">{{ job.source_ref }}</dd>
+      {% if job.message_name %}
+      <dt>proto / message</dt>
+      <dd class="mono">{{ job.proto_package.name if job.proto_package else '' }} / {{ job.message_name }}</dd>
+      {% endif %}
+    </dl>
+    <div class="hint">数据源与源对象不可修改；如需变更请新建作业。</div>
+  </fieldset>
+  {% else %}
+  <fieldset>
+    <legend>2. 选择数据源</legend>
+    {# 环境或源类型变化时，联动加载对应数据源下拉 #}
+    <div hx-get="/api/datasources/options" hx-trigger="change from:#f-env, change from:#f-source-type"
+         hx-include="#job-form" hx-target="#ds-box" hx-swap="innerHTML"></div>
+    <div id="ds-box"><div class="hint">请先选择环境与源类型</div></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>3. 选择源对象</legend>
+    <div id="objects-box"><div class="hint">请先选择数据源</div></div>
+  </fieldset>
+  {% endif %}
+
+  <fieldset>
+    <legend>{{ '3' if is_edit else '4' }}. 目标 Doris 表</legend>
+    {% if is_edit %}
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-doris-db">目标 Doris 库 <span class="req">*</span></label>
+        <input type="text" id="f-doris-db" name="doris_db" required
+               value="{{ form.get('doris_db', job.doris_db) }}">
+      </div>
+      <div class="form-item">
+        <label for="f-doris-table">目标 Doris 表 <span class="req">*</span></label>
+        <input type="text" id="f-doris-table" name="doris_table" required
+               value="{{ form.get('doris_table', job.doris_table) }}">
+        <div class="hint">改成新表名后，提交/更新时按新表自动建表</div>
+      </div>
+    </div>
+    {% else %}
+    {# 环境变化时实时查询该环境 Doris 的库列表；连不上时降级为手输框 #}
+    <div hx-get="/api/envs/doris-dbs" hx-trigger="load, change from:#f-env"
+         hx-include="#job-form" hx-target="#doris-target-box" hx-swap="innerHTML"></div>
+    <div id="doris-target-box"><div class="hint">请先选择环境</div></div>
+    {% endif %}
+  </fieldset>
+
+  <fieldset>
+    <legend>{{ '4' if is_edit else '5' }}. 字段映射</legend>
+    <div id="mapping-box">
+      {% if is_edit %}
+      {# 编辑模式：直接渲染当前映射的可编辑表格 #}
+      {% set error, hint, default_table = None, None, '' %}
+      {% set ttl_column = joptions.get('ttl_column', '') %}
+      {% include "_mapping_table.html" %}
+      {% else %}
+      <div class="hint">选定源对象后自动生成字段映射</div>
+      {% endif %}
+    </div>
+    {% if is_edit %}
+    <div class="btn-row mt">
+      <button type="button" class="btn btn-sm"
+              hx-get="/api/jobs/preview-mapping" hx-include="#job-form"
+              hx-target="#mapping-box" hx-swap="innerHTML">重新生成映射</button>
+      <span class="hint">按数据源元数据/proto 重新生成（会覆盖当前编辑内容）</span>
+    </div>
+    {% endif %}
+  </fieldset>
+
+  <fieldset>
+    <legend>{{ '5' if is_edit else '6' }}. 高级选项（可选）</legend>
+    <div class="form-item">
+      <label for="f-add-ts">
+        {% set ts_checked = (form.get('add_timestamps') == 'on') if form else add_ts %}
+        <input type="checkbox" id="f-add-ts" name="add_timestamps" value="on"
+               {{ 'checked' if ts_checked }}
+               hx-get="/api/jobs/preview-mapping" hx-include="#job-form" hx-trigger="change"
+               hx-target="#mapping-box" hx-swap="innerHTML">
+        附加 kafka 时间与入库时间列
+      </label>
+      <div class="hint">kafka 源追加 kafka_ts（kafka 消息时间，DATETIMEV2(3) 上海时区，无需补丁）；所有源追加 doris_ts（入库时间，Doris 自动填）</div>
+    </div>
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-ttl-num">目标表 TTL（留存时长）</label>
+        <div class="btn-row">
+          <input type="number" id="f-ttl-num" name="ttl_num" min="1" style="width:110px;"
+                 value="{{ form.get('ttl_num', joptions.get('ttl_num', joptions.get('ttl_days', ''))) }}"
+                 placeholder="留空 = 永久保留">
+          {% set cur_ttl_unit = form.get('ttl_unit', joptions.get('ttl_unit', 'DAY')) %}
+          <select id="f-ttl-unit" name="ttl_unit">
+            {% for u in ['HOUR', 'DAY', 'WEEK', 'MONTH'] %}
+            <option value="{{ u }}" {{ 'selected' if cur_ttl_unit == u }}>{{ u }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-item">
+        <label for="f-ttl-col">TTL 时间字段</label>        <select id="f-ttl-col" name="ttl_column">
+          {% if is_edit %}
+          <option value="">永久保留（不启用）</option>
+          {% for m in mapping if m.doris_type is datetype or m.doris_type in ['BIGINT', 'STRING'] %}
+          <option value="{{ m.doris_col }}" {{ 'selected' if joptions.get('ttl_column') == m.doris_col }}>{{ m.doris_col }}{{ '（epoch 毫秒）' if m.doris_type == 'BIGINT' }}{{ '（按 DATE 存储）' if m.doris_type == 'STRING' }}</option>
+          {% else %}
+          <option value="" disabled>无 DATE/DATETIME/BIGINT/STRING 列</option>
+          {% endfor %}
+          {% else %}
+          <option value="">请先完成字段映射</option>
+          {% endif %}
+        </select>
+        <div class="hint">DATE/DATETIME 列原样；BIGINT（epoch 毫秒）以 DATETIMEV2(3) 存储；STRING 须为 'yyyy-MM-dd' 日期格式（按 DATE 存储）；已存在的表不会后加分区</div>
+      </div>
+      <div class="form-item">
+        <label for="f-ttl-hn">预建历史分区数（可选）</label>
+        <input type="number" id="f-ttl-hn" name="ttl_history_num" min="1" style="width:110px;"
+               value="{{ form.get('ttl_history_num', joptions.get('ttl_history_num', '')) }}"
+               placeholder="默认 0（不预建）">
+        <div class="hint">全量/存量同步时填：数据落在动态分区窗口（留存时长+未来3个分区）之外会整批失败（no partition for this tuple）。按数据最早时间折算个数（如 7 小时 TTL 同步 5 天历史填 120），预建后先灌入、TTL 到期自清理</div>
+      </div>
+    </div>
+    <details>
+      <summary>更多高级选项</summary>
+      <div class="details-body form-grid">
+        <div class="form-item">
+          <label for="f-parallel">parallelism</label>
+          <input type="number" id="f-parallel" name="parallelism" min="1"
+                 value="{{ form.get('parallelism', joptions.get('parallelism', '')) }}" placeholder="默认 1">
+          <div class="hint">建议与 kafka topic 分区数对齐</div>
+        </div>
+        <div class="form-item">
+          <label for="f-ckpt">checkpoint.interval（毫秒）</label>
+          <input type="number" id="f-ckpt" name="checkpoint_interval" min="1000"
+                 value="{{ form.get('checkpoint_interval', joptions.get('checkpoint_interval', '')) }}" placeholder="默认 5000">
+          <div class="hint">2PC 开启时，该值直接决定数据可见延迟与故障回放窗口（不是 sink.batch 控制的）</div>
+        </div>
+        <div class="form-item">
+          <label for="f-table-model">目标表模型</label>
+          {% set cur_model = form.get('table_model', joptions.get('table_model', 'DUPLICATE')) %}
+          <select id="f-table-model" name="table_model">
+            <option value="DUPLICATE" {{ 'selected' if cur_model == 'DUPLICATE' }}>DUPLICATE KEY（默认，日志追加）</option>
+            <option value="UNIQUE" {{ 'selected' if cur_model == 'UNIQUE' }}>UNIQUE KEY（幂等去重兜底，按 key 列去重）</option>
+            <option value="AGGREGATE" {{ 'selected' if cur_model == 'AGGREGATE' }}>AGGREGATE KEY（预聚合，key 列相同行按聚合函数合并）</option>
+          </select>
+          <div class="hint">重放数据或重复消费风险场景可选 UNIQUE KEY 兜底去重；UNIQUE/AGGREGATE 时在映射表勾选 key 列（不选默认前 3 个标量列）</div>
+        </div>
+        <div class="form-item kafka-only">
+          <label for="f-start-mode">start_mode（kafka 起始位点）</label>
+          {% set cur_start_mode = form.get('start_mode', joptions.get('start_mode', '')) %}
+          <select id="f-start-mode" name="start_mode">
+            <option value="">默认 latest</option>
+            <option value="latest" {{ 'selected' if cur_start_mode == 'latest' }}>latest</option>
+            <option value="earliest" {{ 'selected' if cur_start_mode == 'earliest' }}>earliest</option>
+          </select>
+        </div>
+        <div class="form-item kafka-only">
+          <label for="f-cg">消费组（kafka consumer group）</label>
+          <input type="text" id="f-cg" name="consumer_group"
+                 value="{{ form.get('consumer_group', joptions.get('consumer_group', '')) }}" placeholder="默认 = 作业名称">
+        </div>
+        <div class="form-item kafka-only">
+          <label for="f-fmb">fetch_max_bytes（kafka 单次拉取字节上限）</label>
+          <input type="number" id="f-fmb" name="fetch_max_bytes" min="1024"
+                 value="{{ form.get('fetch_max_bytes', joptions.get('fetch_max_bytes', '')) }}" placeholder="默认 5242880（5MB）">
+        </div>
+        <div class="form-item kafka-only">
+          <label for="f-mpr">max_poll_records（kafka 单次拉取条数）</label>
+          <input type="number" id="f-mpr" name="max_poll_records" min="1"
+                 value="{{ form.get('max_poll_records', joptions.get('max_poll_records', '')) }}" placeholder="默认 500">
+          <div class="hint">读侧限速主要靠这两个参数：调小可降低内存占用</div>
+        </div>
+        <div class="form-item">
+          <label for="f-buckets">分桶数（目标 Doris 表）</label>
+          <input type="number" id="f-buckets" name="buckets" min="1"
+                 value="{{ form.get('buckets', joptions.get('buckets', '')) }}" placeholder="默认按环境配置">
+        </div>
+        <div class="form-item mongo-only">
+          <label for="f-mongo-mode">同步模式（MongoDB 源）</label>
+          {% set cur_mongo_mode = form.get('mongo_mode', joptions.get('mongo_mode', 'batch')) %}
+          <select id="f-mongo-mode" name="mongo_mode">
+            <option value="batch" {{ 'selected' if cur_mongo_mode != 'cdc' }}>批式快照（一次性全量，job.mode=BATCH）</option>
+            <option value="cdc" {{ 'selected' if cur_mongo_mode == 'cdc' }}>CDC 持续同步（job.mode=STREAMING，需 Mongo 副本集）</option>
+          </select>
+          <div class="hint">初始全量选批式；实时同步选 CDC。CDC 需要 update/delete 语义时目标表模型选 UNIQUE KEY（delete sign 仅 UNIQUE 支持）</div>
+        </div>
+        <div class="form-item mongo-only mongo-cdc-only">
+          <label for="f-cdc-startup">CDC startup.mode</label>
+          {% set cur_startup = form.get('cdc_startup_mode', joptions.get('cdc_startup_mode', 'initial')) %}
+          <select id="f-cdc-startup" name="cdc_startup_mode">
+            <option value="initial" {{ 'selected' if cur_startup == 'initial' }}>initial（先快照后增量，默认）</option>
+            <option value="latest" {{ 'selected' if cur_startup == 'latest' }}>latest（仅增量）</option>
+          </select>
+        </div>
+        <div class="form-item mongo-only mongo-cdc-only">
+          <label for="f-cdc-bs">CDC batch.size</label>
+          <input type="number" id="f-cdc-bs" name="cdc_batch_size" min="1"
+                 value="{{ form.get('cdc_batch_size', joptions.get('cdc_batch_size', '')) }}" placeholder="默认 1024">
+        </div>
+      </div>
+    </details>
+  </fieldset>
+
+  <script>
+  // kafka/mongo 专属高级选项按源类型显隐；CDC 子选项按同步模式显隐
+  (function () {
+    var typeEl = document.getElementById('f-source-type');
+    if (!typeEl) return;
+    var modeEl = document.getElementById('f-mongo-mode');
+    function syncType() {
+      document.querySelectorAll('.kafka-only').forEach(function (el) {
+        el.style.display = typeEl.value === 'kafka' ? '' : 'none';
+      });
+      document.querySelectorAll('.mongo-only').forEach(function (el) {
+        el.style.display = typeEl.value === 'mongodb' ? '' : 'none';
+      });
+      syncCdc();
+    }
+    function syncCdc() {
+      var cdc = typeEl.value === 'mongodb' && modeEl && modeEl.value === 'cdc';
+      document.querySelectorAll('.mongo-cdc-only').forEach(function (el) {
+        el.style.display = cdc ? '' : 'none';
+      });
+    }
+    typeEl.addEventListener('change', syncType);
+    if (modeEl) modeEl.addEventListener('change', syncCdc);
+    syncType();
+  })();
+  // AGGREGATE 模型时显示映射行内的聚合函数下拉（class 驱动 CSS，htmx 重渲染不丢状态）
+  (function () {
+    var form = document.getElementById('job-form');
+    var modelSel = document.getElementById('f-table-model');
+    if (!form || !modelSel) return;
+    function syncModel() {
+      form.classList.toggle('model-agg', modelSel.value === 'AGGREGATE');
+      // key checkbox 仅 UNIQUE/AGGREGATE 显示（DUPLICATE 忽略 map_flags）
+      form.classList.toggle('model-keyed',
+                            modelSel.value === 'UNIQUE' || modelSel.value === 'AGGREGATE');
+    }
+    modelSel.addEventListener('change', syncModel);
+    syncModel();
+  })();
+  </script>
+
+  <fieldset>
+    <legend>{{ '6' if is_edit else '7' }}. 提交</legend>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">{{ '保存修改' if is_edit else '创建作业（DRAFT）' }}</button>
+      <a class="btn" href="{{ '/jobs/' ~ job.id if is_edit else '/jobs' }}">取消</a>
+      {% if is_edit %}
+      <span class="hint">保存后需在作业详情页执行「更新并重启」使新配置生效</span>
+      {% else %}
+      <span class="hint">创建后需在作业详情页执行「提交」才会真正运行</span>
+      {% endif %}
+    </div>
+  </fieldset>
+</form>
+{% endblock %}

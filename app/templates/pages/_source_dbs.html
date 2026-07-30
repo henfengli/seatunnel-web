@@ -1,0 +1,34 @@
+{# 库/schema 选择片段（两级级联第一级，填充 #objects-box）。
+   input+datalist：可输入筛选；只有一个候选时自动填入并立即加载第二级（hx-trigger 加 load）。
+   上下文：ds, dbs, metadata_ready #}
+{% if dbs %}
+<div class="form-grid">
+  <div class="form-item">
+    <label for="f-src-db">{{ 'Schema' if ds.type == 'postgresql' else '数据库' }} <span class="req">*</span></label>
+    <input type="text" id="f-src-db" name="db" required list="src-db-list" autocomplete="off"
+           value="{{ dbs[0] if dbs|length == 1 else '' }}"
+           placeholder="输入关键字筛选，共 {{ dbs|length }} 个"
+           hx-get="/api/datasources/{{ ds.id }}/tables"
+           hx-trigger="{{ 'load, change' if dbs|length == 1 else 'change' }}"
+           hx-target="#src-table-box" hx-swap="innerHTML" hx-include="this">
+    <datalist id="src-db-list">
+      {% for d in dbs %}<option value="{{ d }}">{% endfor %}
+    </datalist>
+  </div>
+  <div class="form-item" id="src-table-box">
+    <label>{{ '集合' if ds.type == 'mongodb' else '表' }} <span class="req">*</span></label>
+    <div class="hint">请先选择{{ 'schema' if ds.type == 'postgresql' else '库' }}</div>
+  </div>
+</div>
+{% else %}
+<div class="form-item">
+  <label for="f-source-ref">
+    源对象（{{ 'schema.table' if ds.type == 'postgresql' else ('db.collection' if ds.type == 'mongodb' else 'db.table') }}）
+    <span class="req">*</span>
+  </label>
+  <input type="text" id="f-source-ref" name="source_ref" required placeholder="手动输入"
+         hx-get="/api/jobs/preview-mapping" hx-include="#job-form" hx-trigger="change"
+         hx-target="#mapping-box" hx-swap="innerHTML">
+  <div class="hint">元数据未就绪（{{ ds.metadata_status }}），请手动输入或先到数据源详情页刷新元数据</div>
+</div>
+{% endif %}

@@ -1,0 +1,46 @@
+env {
+  job.mode = "STREAMING"
+  parallelism = 1
+  checkpoint.interval = {{ checkpoint_interval }}
+}
+source {
+  # MongoDB CDC（change streams + Debezium）：要求 Mongo 为副本集/分片
+  MongoDB-CDC {
+    hosts = "{{ mongo_hosts | hq }}"
+{% if ds.get('username') or ds.get('user') %}    username = "{{ (ds.get('username') or ds.get('user')) | hq }}"
+    password = "{{ ds.get('password', '') | hq }}"
+{% endif %}    database = ["{{ source_db }}"]
+    collection = ["{{ source_db }}.{{ source_table }}"]
+    startup.mode = "{{ cdc_startup_mode }}"
+    batch.size = {{ cdc_batch_size }}
+    plugin_output = "st_src"
+    tables_configs = [
+      {
+        schema {
+          table = "{{ source_db }}.{{ source_table }}"
+          fields {
+{% include "_schema_fields.conf.j2" %}
+          }
+        }
+      }
+    ]
+  }
+}
+{% if sql_select %}
+transform {
+  # ms_epoch 列按数值量级缩放 epoch（SeaTunnel SQL transform 原生 CASE，ZetaSQLFunction 验证）
+  Sql {
+    plugin_input = "st_src"
+    plugin_output = "st_flat"
+    query = """
+    SELECT {{ sql_select | join(', ') }} FROM st_src
+    """
+  }
+}
+{% endif %}
+{% if sql_select %}
+{% set sink_plugin_input = "st_flat" %}
+{% endif %}
+sink {
+{% include "_doris_sink.conf.j2" %}
+}

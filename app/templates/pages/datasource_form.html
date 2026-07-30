@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% set is_edit = ds is not none %}
+{% block page_title %}{{ '编辑数据源' if is_edit else '新建数据源' }}{% endblock %}
+{% block content %}
+
+{% macro field(name, label, value='', placeholder='', required=true, type='text', hint='') %}
+<div class="form-item">
+  <label for="f-{{ name }}">{{ label }}{% if required %} <span class="req">*</span>{% endif %}</label>
+  <input type="{{ type }}" id="f-{{ name }}" name="{{ name }}" value="{{ value }}"
+         placeholder="{{ placeholder }}" {{ 'required' if required }}>
+  {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
+</div>
+{% endmacro %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+<form method="post" action="{{ '/datasources/' ~ ds.id if is_edit else '/datasources' }}">
+  {% if is_edit %}
+  {# 编辑时类型输入框被禁用不随表单提交，用隐藏域补上（测试连接端点也需要） #}
+  <input type="hidden" name="ds_id" value="{{ ds.id }}">
+  <input type="hidden" name="type" value="{{ ds.type }}">
+  {% endif %}
+  <fieldset>
+    <legend>基本信息</legend>
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-env">环境 <span class="req">*</span></label>
+        <select id="f-env" name="env" required>
+          {% for e in env_names %}
+          <option value="{{ e }}" {{ 'selected' if (ds and ds.env == e) or (not ds and loop.first) }}>{{ e }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-item">
+        <label for="f-name">名称 <span class="req">*</span></label>
+        <input type="text" id="f-name" name="name" required
+               value="{{ ds.name if ds else conn.get('name', '') }}" placeholder="如 kafka-main">
+      </div>
+      <div class="form-item">
+        <label for="f-type">类型 <span class="req">*</span></label>
+        {% if is_edit %}
+        {# 类型不允许修改：连接字段结构不同，需新建数据源 #}
+        <input type="text" value="{{ ds.type }}" disabled>
+        <div class="hint">类型不可修改，如需变更请新建数据源</div>
+        {% else %}
+        <select id="f-type" name="type" required>
+          {% for t in ds_types %}
+          <option value="{{ t }}" {{ 'selected' if conn.get('type') == t }}>{{ t }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+      </div>
+    </div>
+  </fieldset>
+
+  {% set cur_type = ds.type if ds else conn.get('type', 'kafka') %}
+
+  <fieldset class="ds-sec" id="sec-kafka">
+    <legend>Kafka 连接</legend>
+    {{ field('servers', 'bootstrap servers', conn.get('servers', ''), 'host1:9092,host2:9092') }}
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-security_protocol">安全协议</label>
+        <select id="f-security_protocol" name="security_protocol">
+          {% for p in ['PLAINTEXT', 'SASL_PLAINTEXT', 'SASL_SSL', 'SSL'] %}
+          <option value="{{ p }}" {{ 'selected' if conn.get('security_protocol', 'SASL_PLAINTEXT') == p }}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-item">
+        <label for="f-sasl_mechanism">SASL 机制</label>
+        <select id="f-sasl_mechanism" name="sasl_mechanism">
+          {% for m in ['PLAIN', 'SCRAM-SHA-256', 'SCRAM-SHA-512'] %}
+          <option value="{{ m }}" {{ 'selected' if conn.get('sasl_mechanism', 'SCRAM-SHA-256') == m }}>{{ m }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {{ field('sasl_username', 'SASL 用户名', conn.get('sasl_username', ''), '', false) }}
+      {{ field('sasl_password', 'SASL 密码', '', '', false, 'password',
+               '编辑时留空表示不修改' if is_edit else '') }}
+    </div>
+    <div class="form-item">
+      <label for="f-extra_config">额外 consumer 配置</label>
+      <textarea id="f-extra_config" name="extra_config" rows="3"
+                placeholder="client.id=vision-1&#10;max.partition.fetch.bytes=10485760">{{ conn.get('extra_config', '') }}</textarea>
+      <div class="hint">每行 key=value，追加进 kafka.config（高级用户自定义）</div>
+    </div>
+  </fieldset>
+
+  <fieldset class="ds-sec" id="sec-mongodb">
+    <legend>MongoDB 连接</legend>
+    <div class="form-grid">
+      {{ field('host', '主机', conn.get('host', ''), 'mongo-host') }}
+      {{ field('port', '端口', conn.get('port', ''), '27017') }}
+      {{ field('username', '用户名', conn.get('username', ''), '') }}
+      {{ field('password', '密码', '', '', false, 'password',
+               '编辑时留空表示不修改' if is_edit else '') }}
+      {{ field('auth_db', '认证库 auth_db', conn.get('auth_db', ''), 'admin', false) }}
+    </div>
+  </fieldset>
+
+  <fieldset class="ds-sec" id="sec-postgresql">
+    <legend>PostgreSQL 连接</legend>
+    <div class="form-grid">
+      {{ field('host', '主机', conn.get('host', ''), 'pg-host') }}
+      {{ field('port', '端口', conn.get('port', ''), '5432') }}
+      {{ field('db', '数据库', conn.get('db', ''), '') }}
+      {{ field('username', '用户名', conn.get('username', ''), '') }}
+      {{ field('password', '密码', '', '', false, 'password',
+               '编辑时留空表示不修改' if is_edit else '') }}
+    </div>
+  </fieldset>
+
+  <fieldset class="ds-sec" id="sec-doris">
+    <legend>Doris 连接</legend>
+    <div class="form-grid">
+      {{ field('fenodes', 'FE 节点', conn.get('fenodes', ''), 'fe1:8030,fe2:8030') }}
+      {{ field('query_port', '查询端口', conn.get('query_port', ''), '9030') }}
+      {{ field('username', '用户名', conn.get('username', ''), 'root') }}
+      {{ field('password', '密码', '', '', false, 'password',
+               '编辑时留空表示不修改' if is_edit else '') }}
+    </div>
+  </fieldset>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">{{ '保存修改' if is_edit else '创建数据源' }}</button>
+    <button type="button" class="btn" hx-post="/datasources/test-conn"
+            hx-target="#test-result" hx-swap="innerHTML">测试连接</button>
+    <a class="btn" href="{{ '/datasources/' ~ ds.id if is_edit else '/datasources' }}">取消</a>
+  </div>
+  <div id="test-result" class="test-result"></div>
+</form>
+
+<script>
+// 按类型切换连接字段分组（少量 vanilla JS，无外部依赖）
+(function () {
+  var cur = "{{ cur_type }}";
+  var typeSelect = document.getElementById('f-type');
+  // SASL 联动：非 SASL 协议时禁用机制/用户名/密码框（disabled 字段不随表单提交）
+  var protoSelect = document.getElementById('f-security_protocol');
+  function syncSasl() {
+    var on = !!(protoSelect && protoSelect.value.indexOf('SASL') === 0
+                && !protoSelect.disabled);
+    ['f-sasl_mechanism', 'f-sasl_username', 'f-sasl_password'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.disabled = !on;
+    });
+  }
+  function show(t) {
+    document.querySelectorAll('.ds-sec').forEach(function (sec) {
+      var on = sec.id === 'sec-' + t;
+      sec.style.display = on ? '' : 'none';
+      // 隐藏分组的输入不参与必填校验
+      sec.querySelectorAll('input, select, textarea').forEach(function (inp) { inp.disabled = !on; });
+    });
+    syncSasl();
+  }
+  if (protoSelect) protoSelect.addEventListener('change', syncSasl);
+  if (typeSelect) {
+    typeSelect.addEventListener('change', function () { show(this.value); });
+    show(typeSelect.value);
+  } else {
+    show(cur);
+  }
+})();
+</script>
+{% endblock %}

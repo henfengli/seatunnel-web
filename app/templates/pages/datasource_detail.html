@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block page_title %}数据源详情：{{ ds.name }}{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between;">
+    <h2 style="margin:0;">{{ ds.env }} / {{ ds.name }} <span class="muted">({{ ds.type }})</span></h2>
+    <div class="btn-row">
+      <button class="btn btn-sm" hx-post="/datasources/{{ ds.id }}/refresh" hx-swap="none"
+              hx-confirm="确定刷新元数据？">刷新元数据</button>
+      <a class="btn btn-sm" href="/datasources/{{ ds.id }}/edit">编辑</a>
+      <button class="btn btn-sm btn-danger" hx-delete="/datasources/{{ ds.id }}" hx-swap="none"
+              hx-confirm="确定删除数据源 {{ ds.name }}？（有关联作业时会被拒绝）">删除</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>连接信息</h2>
+  <dl class="kv">
+    {% for k, v in conn_display.items() %}
+    <dt>{{ k }}</dt><dd class="mono">{{ v if v != '' else '(空)' }}</dd>
+    {% endfor %}
+    <dt>健康状态</dt>
+    <dd>
+      <span class="dot {{ ds.health_status }}"></span>
+      {% if ds.health_status == 'unknown' %}未测试{% else %}
+      <span class="{{ 'test-ok' if ds.health_status == 'ok' else 'test-fail' }}">{{ ds.health_detail }}</span>
+      {% endif %}
+      <button class="btn btn-sm" hx-post="/datasources/{{ ds.id }}/retest" hx-swap="none"
+              style="margin-left:10px;">重新测试</button>
+    </dd>
+    <dt>创建时间</dt><dd class="mono">{{ ds.created_at|dt }}</dd>
+    <dt>更新时间</dt><dd class="mono">{{ ds.updated_at|dt }}</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h2>元数据
+    <span class="badge badge-{{ ds.metadata_status }}"
+          {% if ds.metadata_error %}title="{{ ds.metadata_error }}"{% endif %}>{{ ds.metadata_status }}</span>
+    <span class="muted" style="font-weight:400;">刷新于 {{ ds.metadata_refreshed_at|dt }}</span>
+  </h2>
+  {% if ds.metadata_error %}
+  <div class="alert alert-error">{{ ds.metadata_error }}</div>
+  {% endif %}
+  {% if md %}
+    {% include "_metadata_tree.html" %}
+  {% else %}
+  <div class="hint">暂无元数据缓存，点击「刷新元数据」拉取。</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>关联作业（{{ ds.jobs|length }}）</h2>
+  {% if ds.jobs %}
+  <table class="data">
+    <thead><tr><th>名称</th><th>源对象</th><th>状态</th></tr></thead>
+    <tbody>
+      {% for j in ds.jobs %}
+      <tr>
+        <td><a href="/jobs/{{ j.id }}">{{ j.name }}</a></td>
+        <td class="mono">{{ j.source_ref }}</td>
+        <td>{% with job=j %}{% include "_status_badge.html" %}{% endwith %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="hint">暂无作业引用该数据源。</div>
+  {% endif %}
+</div>
+{% endblock %}

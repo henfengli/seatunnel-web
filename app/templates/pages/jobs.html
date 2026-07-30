@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block page_title %}作业{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between;">
+    <form method="get" action="/jobs" class="btn-row">
+      <select name="env">
+        <option value="">全部环境</option>
+        {% for e in env_names %}<option value="{{ e }}" {{ 'selected' if f_env == e }}>{{ e }}</option>{% endfor %}
+      </select>
+      <select name="status">
+        <option value="">全部状态</option>
+        {% for s in statuses %}<option value="{{ s }}" {{ 'selected' if f_status == s }}>{{ s }}</option>{% endfor %}
+      </select>
+      <input type="text" name="tag" value="{{ f_tag }}" placeholder="按标签过滤" style="width:140px;">
+      <button type="submit" class="btn btn-sm">过滤</button>
+    </form>
+    <div class="btn-row">
+      <a class="btn btn-primary" href="/jobs/new">新建作业</a>
+      <a class="btn" href="/jobs/batch-new">批量新建</a>
+    </div>
+  </div>
+</div>
+
+<form id="batch-form" method="post" action="/jobs/batch">
+<div class="card">
+  <div class="btn-row">
+    <span class="hint">已选 <b id="sel-count">0</b> 个：</span>
+    <button type="submit" name="action" value="start" class="btn btn-sm btn-primary"
+            onclick="return batchConfirm('启动')">启动</button>
+    <button type="submit" name="action" value="stop" class="btn btn-sm btn-warn"
+            onclick="return batchConfirm('停止（带 savepoint）')">停止</button>
+    <button type="submit" name="action" value="restart" class="btn btn-sm"
+            onclick="return batchConfirm('更新并重启（带 savepoint）')">更新并重启</button>
+    <button type="submit" name="action" value="delete" class="btn btn-sm btn-danger"
+            onclick="return batchConfirm('删除（SeaTunnel 侧运行中作业将被取消，记录与指标一并删除）')">删除</button>
+  </div>
+  <details style="margin-top:10px;">
+    <summary>批量改配置（留空 = 不变）</summary>
+    <div class="details-body">
+      <div class="form-grid">
+        <div class="form-item">
+          <label>parallelism</label>
+          <input type="number" name="parallelism" min="1" placeholder="不变">
+        </div>
+        <div class="form-item">
+          <label>checkpoint.interval（毫秒）</label>
+          <input type="number" name="checkpoint_interval" min="1000" placeholder="不变">
+        </div>
+        <div class="form-item">
+          <label>fetch_max_bytes</label>
+          <input type="number" name="fetch_max_bytes" min="1024" placeholder="不变">
+        </div>
+        <div class="form-item">
+          <label>max_poll_records</label>
+          <input type="number" name="max_poll_records" min="1" placeholder="不变">
+        </div>
+        <div class="form-item">
+          <label>分桶数 buckets</label>
+          <input type="number" name="buckets" min="1" placeholder="不变">
+        </div>
+        <div class="form-item">
+          <label>start_mode</label>
+          <select name="start_mode">
+            <option value="">不变</option>
+            <option value="latest">latest</option>
+            <option value="earliest">earliest</option>
+          </select>
+        </div>
+        <div class="form-item">
+          <label>consumer_group</label>
+          <input type="text" name="consumer_group" placeholder="不变（默认 = 作业名）">
+        </div>
+        <div class="form-item">
+          <label>标签（整体替换）</label>
+          <input type="text" name="tags" placeholder="不变，如 cdc,实时">
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:8px;">
+        <label style="font-weight:400;">
+          <input type="checkbox" name="restart" value="on" checked>
+          改完对 RUNNING 作业执行「更新并重启」使配置生效
+        </label>
+        <button type="submit" name="action" value="options" class="btn btn-sm btn-primary"
+                onclick="return batchConfirm('应用配置')">应用配置</button>
+      </div>
+      <div class="hint" style="margin-top:6px;">状态守卫：启动仅 DRAFT/FAILED/ERROR/STOPPED；停止/重启仅 RUNNING；不适用的一律跳过并注明。options 中 TTL/表模型请走单个作业编辑（涉及字段映射校验）。</div>
+    </div>
+  </details>
+</div>
+
+<div class="card">
+  {% if jobs %}
+  <table class="data">
+    <thead>
+      <tr><th class="cb-cell"><input type="checkbox" id="sel-all" title="全选当前筛选结果"></th>
+          <th>名称</th><th>环境</th><th>Doris 库</th><th>源</th><th>目标表</th><th>状态</th><th>更新时间</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td class="cb-cell"><input type="checkbox" name="job_ids" value="{{ job.id }}" class="sel-cb"></td>
+        <td><a href="/jobs/{{ job.id }}">{{ job.name }}</a>
+          {% if job.tag_list %}<div class="hint">{{ job.tag_list|join(' / ') }}</div>{% endif %}
+        </td>
+        <td>{{ job.env }}</td>
+        <td>{{ job.biz_line }}</td>
+        <td class="mono cell-clip" style="max-width:220px;" title="{{ job.source_type }}: {{ job.source_ref }}">{{ job.source_type }}: {{ job.source_ref }}</td>
+        <td class="mono cell-clip" style="max-width:200px;" title="{{ job.doris_db }}.{{ job.doris_table }}">{{ job.doris_db }}.{{ job.doris_table }}</td>
+        <td>{% include "_status_badge.html" %}</td>
+        <td class="mono">{{ job.updated_at|dt }}</td>
+        <td>
+          <div class="btn-row">
+            <a class="btn btn-sm" href="/jobs/{{ job.id }}/edit">编辑</a>
+            {% if job.status == 'DRAFT' %}
+            <button type="button" class="btn btn-sm btn-primary" hx-post="/jobs/{{ job.id }}/submit" hx-swap="none"
+                    hx-confirm="提交作业 {{ job.name }} 到 {{ job.env }}？">提交</button>
+            {% elif job.status == 'RUNNING' %}
+            <button type="button" class="btn btn-sm btn-warn" hx-post="/jobs/{{ job.id }}/stop" hx-swap="none"
+                    hx-confirm="停止作业 {{ job.name }}（带 savepoint）？">停止</button>
+            <button type="button" class="btn btn-sm" hx-post="/jobs/{{ job.id }}/update" hx-swap="none"
+                    hx-confirm="按当前配置更新并重启 {{ job.name }}？">更新并重启</button>
+            {% elif job.status in ['FAILED', 'ERROR'] %}
+            <button type="button" class="btn btn-sm btn-primary" hx-post="/jobs/{{ job.id }}/submit" hx-swap="none"
+                    hx-confirm="重新提交作业 {{ job.name }}？">重新提交</button>
+            {% elif job.status == 'STOPPED' %}
+            <button type="button" class="btn btn-sm btn-primary" hx-post="/jobs/{{ job.id }}/restart" hx-swap="none"
+                    hx-confirm="带 savepoint 恢复作业 {{ job.name }}？">恢复</button>
+            {% endif %}
+            {% if job.status != 'RUNNING' %}
+            <button type="button" class="btn btn-sm btn-danger" hx-delete="/jobs/{{ job.id }}" hx-swap="none"
+                    hx-confirm="确定删除作业 {{ job.name }}？版本与事件历史将一并删除。">删除</button>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="hint">没有符合条件的作业。</div>
+  {% endif %}
+</div>
+</form>
+
+<script>
+// 批量选择：全选当前筛选结果 + 已选计数 + 提交前确认
+(function () {
+  var all = document.getElementById('sel-all');
+  function cbs() { return document.querySelectorAll('.sel-cb'); }
+  function count() {
+    var n = document.querySelectorAll('.sel-cb:checked').length;
+    document.getElementById('sel-count').textContent = n;
+    return n;
+  }
+  if (all) {
+    all.addEventListener('change', function () {
+      cbs().forEach(function (cb) { cb.checked = all.checked; });
+      count();
+    });
+  }
+  cbs().forEach(function (cb) { cb.addEventListener('change', count); });
+  window.batchConfirm = function (label) {
+    var n = count();
+    if (n === 0) { alert('请先勾选作业'); return false; }
+    return confirm('确定对 ' + n + ' 个作业执行「' + label + '」？');
+  };
+})();
+</script>
+{% endblock %}

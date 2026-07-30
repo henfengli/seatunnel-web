@@ -1,0 +1,31 @@
+{# 作业日志片段：平台操作日志（JobEvent）+ SeaTunnel 侧日志。上下文：job, logs, events #}
+<h3 style="margin-top:0;">平台操作日志（{{ events|length }}）</h3>
+{% if events %}
+<table class="data">
+  <thead><tr><th>时间</th><th>事件</th><th>详情</th></tr></thead>
+  <tbody>
+    {% for ev in events %}
+    <tr>
+      <td class="mono">{{ ev.created_at|dt }}</td>
+      <td>{{ ev.event }}</td>
+      <td class="cell-clip" style="max-width:640px;" title="{{ ev.detail or '' }}">{{ ev.detail or '' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="hint">暂无平台操作记录。</div>
+{% endif %}
+
+<h3 class="mt">SeaTunnel 作业日志</h3>
+{% if logs.error %}
+<div class="alert alert-error">{{ logs.error }}</div>
+{% else %}
+<div class="btn-row" style="justify-content: space-between;">
+  <span class="muted mono">{{ logs.link }}（截尾 {{ logs.lines|length }} 行）</span>
+  <button class="btn btn-sm" hx-get="/api/jobs/{{ job.id }}/logs"
+          hx-target="#job-logs" hx-swap="innerHTML">刷新</button>
+</div>
+{% if logs.note %}<div class="hint">{{ logs.note }}</div>{% endif %}
+<pre class="code log-box">{{ logs.lines | join('\n') }}</pre>
+{% endif %}

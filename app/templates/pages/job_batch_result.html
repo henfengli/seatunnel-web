@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block page_title %}批量创建结果{% endblock %}
+{% block content %}
+<div class="card">
+  <h2>批量创建结果：成功 {{ ok_cnt }} / {{ results|length }}</h2>
+  {% if results %}
+  <table class="data">
+    <thead><tr><th>源对象</th><th>作业名</th><th>结果</th></tr></thead>
+    <tbody>
+      {% for r in results %}
+      <tr>
+        <td class="mono">{{ r.ref }}</td>
+        <td>{% if r.job %}<a href="/jobs/{{ r.job.id }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</td>
+        <td>
+          {% if r.ok %}
+          <span class="test-ok">✓ 已创建（DRAFT）</span>
+          {% if r.error %}<div class="hint">{{ r.error }}</div>{% endif %}
+          {% else %}
+          <span class="test-fail">✗ {{ r.error }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="hint">没有可创建的对象。</div>
+  {% endif %}
+  <div class="btn-row mt">
+    <a class="btn btn-primary" href="/jobs">前往作业列表</a>
+    <a class="btn" href="/jobs/batch-new">继续批量新建</a>
+  </div>
+</div>
+{% endblock %}

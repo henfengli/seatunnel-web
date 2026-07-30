@@ -1,0 +1,5 @@
+{# 徽章轮询片段：outerHTML 替换自身以持续 15s 轮询。上下文变量 job #}
+<div class="badge-poller" hx-get="/jobs/{{ job.id }}/badge" hx-trigger="every 15s"
+     hx-swap="outerHTML" style="display:inline-block;">
+  {% include "_status_badge.html" %}
+</div>

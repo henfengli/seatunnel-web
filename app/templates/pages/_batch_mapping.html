@@ -1,0 +1,101 @@
+{# 批量建作业：单对象映射块（TTL 时间字段 + 可折叠映射表）。
+   上下文：p（输入名前缀，如 o3_）、mapping、error #}
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+{% if mapping %}
+<div class="form-item" style="max-width:420px;">
+  <label>TTL 时间字段</label>
+  {% set ttl_cols = (mapping | selectattr('doris_type', 'datetype') | list)
+                    + (mapping | selectattr('doris_type', 'equalto', 'BIGINT') | list)
+                    + (mapping | selectattr('doris_type', 'equalto', 'STRING') | list) %}
+  <select name="{{ p }}ttl_column">
+    {% if ttl_cols %}
+    <option value="">永久保留（不启用）</option>
+    {% for m in ttl_cols %}
+    <option value="{{ m.doris_col }}">{{ m.doris_col }}{{ '（epoch 毫秒）' if m.doris_type == 'BIGINT' }}{{ '（按 DATE 存储）' if m.doris_type == 'STRING' }}</option>
+    {% endfor %}
+    {% else %}
+    <option value="" disabled>无 DATE/DATETIME/BIGINT/STRING 列</option>
+    {% endif %}
+  </select>
+</div>
+<details class="map-details">
+  <summary>字段映射（{{ mapping|length }} 个字段，展开可编辑）</summary>
+  <div class="details-body" style="overflow-x:auto;">
+  <table class="data">
+    <thead>
+      <tr><th>启用</th><th>源字段</th><th>SeaTunnel 类型</th><th>Doris 列名（可编辑）</th><th>Doris 类型（可编辑）</th><th>标记</th><th>聚合（AGGREGATE）</th><th>备注</th></tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(flat_shown=[]) %}
+      {% for m in mapping %}
+      <tr>
+        <td class="cb-cell">
+          <input type="hidden" name="{{ p }}map_enabled" value="1">
+          {% if not m.get('sink_only') %}
+          <input type="checkbox" checked title="取消勾选 = 该字段不进作业"
+                 onchange="this.previousElementSibling.value=this.checked?'1':'0'">
+          {% endif %}
+        </td>
+        <td class="mono">{{ m.get('src_path', m.source) }}
+          {% if m.st_type.startswith('{') %}
+          {# 嵌套 message（未拍平）：可切换拍平展开（重渲染本对象映射块，丢失未提交编辑） #}
+          <select name="{{ p }}flatten_{{ m.source }}" class="flatten-sel"
+                  hx-get="/api/jobs/batch-mapping?p={{ p }}" hx-include="closest .obj-block" hx-trigger="change"
+                  hx-target="#omap-{{ p[:-1] }}" hx-swap="innerHTML">
+            <option value="" selected>VARIANT 整列</option>
+            <option value="1">拍平展开</option>
+          </select>
+          {% elif m.get('src_root') and m.src_root not in ns.flat_shown %}
+          {% set ns.flat_shown = ns.flat_shown + [m.src_root] %}
+          <select name="{{ p }}flatten_{{ m.src_root }}" class="flatten-sel"
+                  hx-get="/api/jobs/batch-mapping?p={{ p }}" hx-include="closest .obj-block" hx-trigger="change"
+                  hx-target="#omap-{{ p[:-1] }}" hx-swap="innerHTML">
+            <option value="">VARIANT 整列</option>
+            <option value="1" selected>拍平展开</option>
+          </select>
+          {% endif %}
+          <input type="hidden" name="{{ p }}map_source" value="{{ m.source }}">
+          <input type="hidden" name="{{ p }}map_nested" value="{{ '1' if m.nested else '0' }}">
+          <input type="hidden" name="{{ p }}map_note" value="{{ m.get('note', '') }}">
+          <input type="hidden" name="{{ p }}map_sink_only" value="{{ '1' if m.get('sink_only') else '0' }}">
+          <input type="hidden" name="{{ p }}map_default" value="{{ m.get('default', '') }}">
+          <input type="hidden" name="{{ p }}map_src_path" value="{{ m.get('src_path', '') }}">
+          <input type="hidden" name="{{ p }}map_src_root" value="{{ m.get('src_root', '') }}">
+          <input type="hidden" name="{{ p }}map_src_root_type" value="{{ m.get('src_root_type', '') }}">
+        </td>
+        <td class="mono">{{ m.st_type }}
+          <input type="hidden" name="{{ p }}map_st_type" value="{{ m.st_type }}">
+        </td>
+        <td><input type="text" name="{{ p }}map_doris_col" value="{{ m.doris_col }}" required></td>
+        <td><input type="text" name="{{ p }}map_doris_type" value="{{ m.doris_type }}" required></td>
+        <td class="cb-cell">
+          <input type="hidden" name="{{ p }}map_flags"
+                 value="{{ ['key' if m.get('is_key'), 'ms_epoch' if m.get('ms_epoch')] | select | join(',') }}">
+          {% if not m.get('sink_only') %}
+          <span class="key-cb-wrap" title="key 列（UNIQUE/AGGREGATE 模型）">
+            <input type="checkbox" {{ 'checked' if m.get('is_key') }}
+                   onchange="this.parentNode.previousElementSibling.value=this.checked?'key':''">
+            <span class="muted">key</span>
+          </span>
+          {% endif %}
+        </td>
+        <td>
+          {% if m.get('sink_only') %}
+          <input type="hidden" name="{{ p }}map_agg" value="">
+          {% else %}
+          {% set cur_agg = m.get('agg', 'REPLACE') %}
+          <select name="{{ p }}map_agg" class="agg-sel" title="聚合函数（仅 AGGREGATE 模型生效）">
+            {% for a in ['REPLACE', 'SUM', 'MIN', 'MAX'] %}
+            <option value="{{ a }}" {{ 'selected' if cur_agg == a }}>{{ a }}</option>
+            {% endfor %}
+          </select>
+          {% endif %}
+        </td>
+        <td class="muted">{{ m.get('note', '') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</details>
+{% endif %}

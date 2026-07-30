@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block page_title %}环境{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between;">
+    <h2 style="margin:0;">环境列表</h2>
+    <a class="btn btn-primary" href="/environments/new">新建环境</a>
+  </div>
+</div>
+<div class="card">
+  {% if env_rows %}
+  <table class="data">
+    <thead>
+      <tr><th>名称</th><th>健康</th><th>SeaTunnel masters</th><th>Doris fenodes</th><th>VARIANT</th><th>作业数</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+      {% for r in env_rows %}
+      <tr>
+        <td><a href="/environments/{{ r.env.id }}/edit">{{ r.env.name }}</a></td>
+        <td>
+          <div title="{{ r.parts.seatunnel[1] }}"><span class="dot {{ r.parts.seatunnel[0] }}"></span><span class="muted">SeaTunnel</span></div>
+          <div title="{{ r.parts.doris[1] }}"><span class="dot {{ r.parts.doris[0] }}"></span><span class="muted">Doris</span></div>
+        </td>
+        <td class="mono">{% for m in r.masters %}{{ m }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+        <td class="mono cell-clip" style="max-width:200px;" title="{{ r.env.doris_fenodes }}">{{ r.env.doris_fenodes }}</td>
+        <td>{{ '启用' if r.env.variant_enabled else '关闭' }}</td>
+        <td class="num">{{ r.job_count }}</td>
+        <td>
+          <div class="btn-row">
+            <a class="btn btn-sm" href="/monitor?env={{ r.env.name }}">监控</a>
+            <a class="btn btn-sm" href="/environments/{{ r.env.id }}/logs">日志</a>
+            <a class="btn btn-sm" href="/environments/{{ r.env.id }}/edit">编辑</a>
+            <button class="btn btn-sm btn-danger" hx-delete="/environments/{{ r.env.id }}" hx-swap="none"
+                    hx-confirm="确定删除环境 {{ r.env.name }}？（存在关联数据源或作业时会被拒绝）">删除</button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="hint">暂无环境，点击右上角「新建环境」开始。</div>
+  {% endif %}
+</div>
+{% endblock %}

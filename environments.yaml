@@ -1,0 +1,45 @@
+# 全局配置（git 管理）
+# 注意：environments 段仅首次启动时作为种子导入数据库（示例 template 环境，可直接在
+# Web 上修改或删除），之后环境全部在 Web 上创建和管理。
+environments:
+  template:
+    seatunnel:
+      # master REST 地址列表，提交/停止时按顺序尝试（容错）
+      masters:
+        - "http://seatunnel-master:8080"
+    doris:
+      fenodes: "doris-fe:8030"
+      query_port: 9030
+      username: "root"
+      password: ""
+      # Doris 2.1+ 支持 VARIANT；老版本设 false，嵌套字段退化为 STRING 存 JSON
+      variant_enabled: true
+      default_buckets: 3
+      # 单机 Doris（1 个 BE）为 1；生产集群（多 BE）改为 3
+      replication_num: 1
+    # proto 站点（可选默认来源，ProtoPackage 也可单独配置 URL）
+    proto_site:
+      base_url: ""
+      auth_header: ""        # 例: "Bearer xxxx"
+
+# 目标 Doris 库默认值（作业向导第 4 步预填；目标表名默认 {source_type}_{源表名}，可改）
+doris_naming:
+  default_db: "seatunnel_sync"
+
+# 状态看护
+watchdog:
+  status_poll_seconds: 15
+  metrics_poll_seconds: 60
+  # 元数据自动刷新周期（默认 24 小时；创建/编辑数据源时会立即刷新，页面上也可手动刷新）
+  metadata_refresh_seconds: 86400
+  # proto 包轮询巡查节拍（各包另有 poll_interval_sec，默认 1h）
+  proto_poll_tick_seconds: 3600
+  # 指标样本保留天数（速率图最长看 7 天，默认多留一倍）
+  metrics_retention_days: 14
+  # 钉钉自定义机器人告警（作业失败/批量操作部分失败/schema 漂移时推送）
+  # alert_webhook: 机器人 webhook 完整地址，留空关闭告警
+  #   例: "https://oapi.dingtalk.com/robot/send?access_token=你的token"
+  # alert_secret: 机器人「安全设置」选「加签」时填 SEC 开头的密钥；选「自定义关键词」时留空，
+  #   关键词设为 SeaTunnel 或 告警（告警标题固定为「SeaTunnel 平台告警」，会命中关键词）
+  alert_webhook: ""
+  alert_secret: ""

@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% set is_edit = env is not none %}
+{% block page_title %}{{ '编辑环境' if is_edit else '新建环境' }}{% endblock %}
+{% block content %}
+
+{% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+
+{# 取值优先级：校验失败回显 form > 编辑时的 env 属性 > 默认值 #}
+{% macro val(name, default='') %}{{ form.get(name, env[name] if env else default) or '' }}{% endmacro %}
+
+<form method="post" action="{{ '/environments/' ~ env.id if is_edit else '/environments' }}">
+  {% if is_edit %}<input type="hidden" name="env_id" value="{{ env.id }}">{% endif %}
+  <fieldset>
+    <legend>基本信息</legend>
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-name">名称 <span class="req">*</span></label>
+        <input type="text" id="f-name" name="name" required
+               value="{{ val('name') }}" placeholder="如 dev / test / prod">
+        <div class="hint">仅限字母/数字/下划线/中划线；数据源与作业按此名引用环境</div>
+      </div>
+      <div class="form-item">
+        <label for="f-variant_enabled">Doris VARIANT 支持</label>
+        {% set ve = form.get('variant_enabled', 'true' if (not env or env.variant_enabled) else 'false') %}
+        <select id="f-variant_enabled" name="variant_enabled">
+          <option value="true" {{ 'selected' if ve == 'true' }}>启用（Doris 2.1+）</option>
+          <option value="false" {{ 'selected' if ve == 'false' }}>关闭（嵌套字段退化为 STRING）</option>
+        </select>
+      </div>
+      <div class="form-item">
+        <label for="f-default_buckets">默认分桶数</label>
+        <input type="number" id="f-default_buckets" name="default_buckets" min="1"
+               value="{{ val('default_buckets', 10) }}">
+      </div>
+      <div class="form-item">
+        <label for="f-replication_num">Doris 副本数</label>
+        <input type="number" id="f-replication_num" name="replication_num" min="1" max="3"
+               value="{{ val('replication_num', 1) }}">
+        <div class="hint">单机 Doris 为 1（默认）；生产集群（多 BE）改为 3</div>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>SeaTunnel 集群</legend>
+    <div class="form-item">
+      <label for="f-seatunnel_masters">master REST 地址 <span class="req">*</span></label>
+      <textarea id="f-seatunnel_masters" name="seatunnel_masters" rows="3" required
+                placeholder="http://host1:8080&#10;http://host2:8080">{{ val('seatunnel_masters') }}</textarea>
+      <div class="hint">每行一个或逗号分隔，提交/停止时按顺序尝试（容错）</div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Doris 连接</legend>
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-doris_fenodes">FE 节点 <span class="req">*</span></label>
+        <input type="text" id="f-doris_fenodes" name="doris_fenodes" required
+               value="{{ val('doris_fenodes') }}" placeholder="fe1:8030,fe2:8030">
+      </div>
+      <div class="form-item">
+        <label for="f-doris_query_port">查询端口</label>
+        <input type="number" id="f-doris_query_port" name="doris_query_port" min="1"
+               value="{{ val('doris_query_port', 9030) }}">
+      </div>
+      <div class="form-item">
+        <label for="f-doris_username">用户名 <span class="req">*</span></label>
+        <input type="text" id="f-doris_username" name="doris_username" required
+               value="{{ val('doris_username', 'root') }}">
+      </div>
+      <div class="form-item">
+        <label for="f-doris_password">密码</label>
+        <input type="password" id="f-doris_password" name="doris_password" value="">
+        {% if is_edit %}<div class="hint">留空表示不修改</div>{% endif %}
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Proto 站点（可选）</legend>
+    <div class="form-grid">
+      <div class="form-item">
+        <label for="f-proto_site_url">站点 URL</label>
+        <input type="text" id="f-proto_site_url" name="proto_site_url"
+               value="{{ val('proto_site_url') }}" placeholder="可留空">
+      </div>
+      <div class="form-item">
+        <label for="f-proto_site_auth">Auth Header</label>
+        <input type="password" id="f-proto_site_auth" name="proto_site_auth" value=""
+               placeholder="如 Bearer xxxx">
+        {% if is_edit %}<div class="hint">留空表示不修改</div>{% endif %}
+      </div>
+    </div>
+  </fieldset>
+
+  {% if is_edit %}
+  <fieldset>
+    <legend>健康状态</legend>
+    <div class="form-item">
+      <span class="dot {{ health[0] }}"></span>
+      {% if health[0] == 'unknown' %}未测试{% else %}
+      <span class="{{ 'test-ok' if health[0] == 'ok' else 'test-fail' }}">{{ health[1] }}</span>
+      {% endif %}
+      <button type="button" class="btn btn-sm" hx-post="/environments/{{ env.id }}/retest" hx-swap="none"
+              style="margin-left:10px;">重新测试</button>
+    </div>
+  </fieldset>
+  {% endif %}
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">{{ '保存修改' if is_edit else '创建环境' }}</button>
+    <button type="button" class="btn" hx-post="/environments/test-conn"
+            hx-target="#test-result" hx-swap="innerHTML">测试连接</button>
+    <a class="btn" href="/environments">取消</a>
+  </div>
+  <div id="test-result" class="test-result"></div>
+</form>
+{% endblock %}

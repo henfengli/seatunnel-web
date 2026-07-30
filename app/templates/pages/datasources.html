@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block page_title %}数据源{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="btn-row" style="justify-content: space-between;">
+    <h2 style="margin:0;">数据源列表</h2>
+    <a class="btn btn-primary" href="/datasources/new">新建数据源</a>
+  </div>
+</div>
+<div class="card">
+  {% if ds_list %}
+  <table class="data">
+    <thead>
+      <tr><th>环境</th><th>名称</th><th>类型</th><th>地址</th><th>元数据状态</th><th>刷新时间</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+      {% for ds in ds_list %}
+      <tr>
+        <td>{{ ds.env }}</td>
+        <td><span class="dot {{ ds.health_status }}" title="{{ ds.health_detail or '未测试' }}"></span><a href="/datasources/{{ ds.id }}">{{ ds.name }}</a></td>
+        <td><span class="badge badge-type">{{ ds.type }}</span></td>
+        <td class="mono cell-clip" style="max-width:260px;" title="{{ ds|ds_addr }}">{{ ds|ds_addr }}</td>
+        <td>
+          <span class="badge badge-{{ ds.metadata_status }}"
+                {% if ds.metadata_error %}title="{{ ds.metadata_error }}"{% endif %}>{{ ds.metadata_status }}</span>
+        </td>
+        <td class="mono">{{ ds.metadata_refreshed_at|dt }}</td>
+        <td>
+          <div class="btn-row">
+            <button class="btn btn-sm" hx-post="/datasources/{{ ds.id }}/refresh" hx-swap="none"
+                    hx-confirm="确定刷新 {{ ds.name }} 的元数据？">刷新元数据</button>
+            <a class="btn btn-sm" href="/datasources/{{ ds.id }}/edit">编辑</a>
+            <button class="btn btn-sm btn-danger" hx-delete="/datasources/{{ ds.id }}" hx-swap="none"
+                    hx-confirm="确定删除数据源 {{ ds.name }}？（有关联作业时会被拒绝）">删除</button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="hint">暂无数据源，点击右上角「新建数据源」开始。</div>
+  {% endif %}
+</div>
+{% endblock %}
