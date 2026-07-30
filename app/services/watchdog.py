@@ -1,66 +1,22 @@
 """后台看护：状态轮询、指标采集、元数据刷新、proto 轮询与钉钉告警。"""
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import logging
-import time
-import urllib.parse
 from datetime import datetime, timedelta
 
-import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import or_
 
 from ..core.config import get_settings
 from ..core.db import SessionLocal
 from ..models import Datasource, Job, JobEvent, MetricSample, ProtoPackage
-from . import orchestrator, proto_center
+from . import monitor, orchestrator, proto_center
+from .alerting import alert
 from .metadata import base as metadata
 
 logger = logging.getLogger(__name__)
 
 scheduler: BackgroundScheduler | None = None
-
-
-def _alert(text: str) -> None:
-    """钉钉自定义机器人 markdown 告警；webhook 未配置或发送失败仅记日志。
-
-    environments.yaml 的 watchdog 段：
-      alert_webhook: "https://oapi.dingtalk.com/robot/send?access_token=XXX"
-      alert_secret:  "SEC..."   # 机器人安全设置选「加签」时必填；选「自定义关键词」时留空，
-                                # 关键词设为 SeaTunnel 或 告警（标题固定含「SeaTunnel 平台告警」）
-    """
-    webhook = get_settings().watchdog.get("alert_webhook") or ""
-    if not webhook:
-        logger.info("alert(无 webhook): %s", text)
-        return
-    url = webhook
-    secret = get_settings().watchdog.get("alert_secret") or ""
-    if secret:
-        ts = str(round(time.time() * 1000))
-        sign = urllib.parse.quote_plus(base64.b64encode(
-            hmac.new(secret.encode(), f"{ts}\n{secret}".encode(),
-                     hashlib.sha256).digest()))
-        url += f"{'&' if '?' in url else '?'}timestamp={ts}&sign={sign}"
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.post(url, json={
-                "msgtype": "markdown",
-                "markdown": {"title": "SeaTunnel 平台告警", "text": text},
-            })
-            resp.raise_for_status()
-            try:
-                data = resp.json()
-            except ValueError:
-                data = {}
-            if data.get("errcode"):
-                logger.warning("钉钉告警被拒: %s", data)
-            elif not data:
-                logger.warning("钉钉告警响应异常（非 JSON）: %s", resp.text[:200])
-    except Exception as e:  # noqa: BLE001
-        logger.warning("告警发送失败: %s", e)
 
 
 def _poll_status() -> None:
@@ -77,7 +33,7 @@ def _poll_status() -> None:
                 old = job.status
                 orchestrator.refresh_status(db, job)
                 if old in ("RUNNING", "ERROR") and job.status == "FAILED":
-                    _alert(
+                    alert(
                         f"### 作业失败告警\n"
                         f"- 作业: {job_name}\n- 环境: {job.env}\n"
                         f"- SeaTunnel jobId: {job.seatunnel_job_id}"
@@ -93,7 +49,7 @@ def _poll_metrics() -> None:
         jobs = db.query(Job).filter(Job.status == "RUNNING").all()
         for job in jobs:
             try:
-                orchestrator.collect_metrics(db, job)
+                monitor.collect_metrics(db, job)
             except Exception as e:  # noqa: BLE001
                 logger.warning("指标采集失败 job=%s(%s): %s", job.id, job.name, e)
 
@@ -154,7 +110,7 @@ def _poll_protos() -> None:
                     db.add(job)
                 db.commit()
                 if jobs:
-                    _alert(
+                    alert(
                         f"### Proto schema 漂移\n"
                         f"- proto 包: {pkg.name}\n"
                         f"- 受影响作业: {', '.join(j.name for j in jobs)}"

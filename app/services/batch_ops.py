@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from ..core.crypto import sanitize_error
 from ..core.db import SessionLocal
 from ..models import BatchItem, BatchTask, Job, MetricSample
-from . import orchestrator
+from . import orchestrator, seatunnel_client as st
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ STR_OPTION_KEYS = ("start_mode", "consumer_group")
 def create_batch(db: Session, action: str, jobs: list[Job], params: dict | None = None) -> BatchTask:
     """建任务与逐条记录（PENDING），返回 task；调用方随后 start_batch。"""
     task = BatchTask(action=action, total=len(jobs),
-                     params_json=BatchTask._dumps(params or {}))
+                     params=params or {})
     db.add(task)
     db.flush()
     for job in jobs:
@@ -144,16 +144,14 @@ def _delete_one(db: Session, job: Job) -> tuple[str, str]:
 
     集群不可达时拒绝删除——查不到状态就静默删库会留下孤儿作业继续双写。
     """
-    from .orchestrator import _get, _post
-
     note = ""
     if job.seatunnel_job_id:
         try:
-            info = _get(db, job.env, f"/job-info/{job.seatunnel_job_id}")
+            info = st.get(db, job.env, f"/job-info/{job.seatunnel_job_id}")
         except Exception as e:  # noqa: BLE001 - 连接级异常：无法确认远端状态，拒绝删除
             return "FAILED", f"无法确认 SeaTunnel 侧作业状态（集群不可达），未删除: {e}"
         if info and str(info.get("jobStatus", "")).upper() == "RUNNING":
-            _post(db, job.env, "/stop-job",
+            st.post(db, job.env, "/stop-job",
                   json={"jobId": int(job.seatunnel_job_id), "isStopWithSavePoint": False})
             note = f"SeaTunnel 侧运行中作业已取消（jobId={job.seatunnel_job_id}）"
         elif info:
@@ -182,7 +180,7 @@ def _options_one(db: Session, task: BatchTask, job: Job) -> tuple[str, str]:
         changed.append("标签")
     if not changed:
         return "SKIPPED", "无变更字段"
-    job.options_json = Job._dumps(opts)
+    job.options = opts
     db.add(job)
     db.commit()
     detail = "已更新: " + ", ".join(changed)
@@ -198,7 +196,7 @@ def _options_one(db: Session, task: BatchTask, job: Job) -> tuple[str, str]:
 
 def _alert_summary(task: BatchTask, items: list[BatchItem]) -> None:
     """有失败时聚合一条告警（逐条明细最多列 20 个）。"""
-    from .watchdog import _alert
+    from .alerting import alert
 
     failed = [i for i in items if i.status == "FAILED"]
     if not failed:
@@ -209,4 +207,4 @@ def _alert_summary(task: BatchTask, items: list[BatchItem]) -> None:
     lines += [f"  - {i.job_name}: {i.detail}" for i in failed[:20]]
     if len(failed) > 20:
         lines.append(f"  - …等共 {len(failed)} 个")
-    _alert("\n".join(lines))
+    alert("\n".join(lines))

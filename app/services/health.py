@@ -10,21 +10,8 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from ..core.crypto import decrypt, sanitize_error
+from ..core.crypto import decrypt_conn, sanitize_error
 from ..models import Datasource, Environment
-
-
-def decrypted(conn: dict) -> dict:
-    """connection 中 password/auth 字段解密（非密文按原文使用）。"""
-    out = {}
-    for k, v in conn.items():
-        if isinstance(v, str) and v and ("password" in k.lower() or "auth" in k.lower()):
-            try:
-                v = decrypt(v)
-            except Exception:  # noqa: BLE001
-                pass
-        out[k] = v
-    return out
 
 
 # ---------------------------------------------------------------- 数据源
@@ -164,7 +151,7 @@ def _test_doris_safe(doris: dict) -> tuple[bool, str]:
 def check_datasource(db: Session, ds: Datasource) -> None:
     """测一次并写入 health 字段；任何异常都记为 fail，不阻塞调用方。"""
     try:
-        ok, msg = test_datasource(ds.type, decrypted(ds.connection))
+        ok, msg = test_datasource(ds.type, decrypt_conn(ds.connection))
     except Exception as e:  # noqa: BLE001
         ok, msg = False, str(e)[:500]
     ds.health_status = "ok" if ok else "fail"

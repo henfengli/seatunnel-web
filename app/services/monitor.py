@@ -13,8 +13,8 @@ import httpx
 from sqlalchemy.orm import Session
 
 from ..models import Job, MetricSample
-from ..core.crypto import sanitize_error
-from . import doris_ddl, envs, health
+from ..core.crypto import decrypt_conn, sanitize_error
+from . import doris_ddl, envs, seatunnel_client as st
 
 _TIMEOUT = 8
 _CACHE_TTL = 30
@@ -22,8 +22,10 @@ _cache: dict[str, tuple[float, dict]] = {}
 
 
 def _cached(key: str, fn):
-    """30 秒内存缓存（env 级查询用，避免页面刷新反复打集群）。"""
+    """30 秒内存缓存（env 级查询用，避免页面刷新反复打集群）。取用时顺手清过期项，防无限堆积。"""
     now = time.time()
+    for k in [k for k, (ts, _) in _cache.items() if now - ts >= _CACHE_TTL]:
+        _cache.pop(k, None)
     hit = _cache.get(key)
     if hit and now - hit[0] < _CACHE_TTL:
         return hit[1]
@@ -73,16 +75,8 @@ def _human(n: float) -> str:
 # ---------------------------------------------------------------- SeaTunnel REST
 
 def _st_get(env_dict: dict, path: str, raw: bool = False, timeout: int = _TIMEOUT):
-    """按顺序尝试各 master，全部失败抛最后一个异常；raw=True 返回文本。"""
-    last: Exception | None = None
-    for master in env_dict["seatunnel"]["masters"]:
-        try:
-            resp = httpx.get(master.rstrip("/") + path, timeout=timeout)
-            resp.raise_for_status()
-            return resp.text if raw else resp.json()
-        except Exception as e:  # noqa: BLE001 - 换下一个 master
-            last = e
-    raise last  # type: ignore[misc]
+    """SeaTunnel GET 的本地别名（统一走 seatunnel_client，带 monitor 默认超时）。"""
+    return st.request_env(env_dict, "GET", path, raw=raw, timeout=timeout)
 
 
 def seatunnel_cluster(db: Session, env_name: str) -> dict:
@@ -309,7 +303,7 @@ def kafka_lag(db: Session, job: Job) -> dict | None:
 
         from .metadata.kafka_d import _admin_kwargs
 
-        conn = health.decrypted(job.datasource.connection)
+        conn = decrypt_conn(job.datasource.connection)
         group = job.options.get("consumer_group") or job.name
         topic = job.source_ref
         consumer = KafkaConsumer(group_id=group, enable_auto_commit=False,
@@ -484,3 +478,78 @@ def job_logs(db: Session, job: Job, tail: int = 500) -> dict:
     except Exception as e:  # noqa: BLE001
         result["error"] = sanitize_error(str(e))[:300]
     return result
+
+
+# ---------------------------------------------------------------- 指标采集
+
+
+def _num(v) -> float | None:
+    """数值解析：2.3.13 的 metrics 值全是字符串，兼容 int/float/数字字符串。"""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        try:
+            return float(v) if "." in v else int(v)
+        except ValueError:
+            return None
+    return None
+
+
+def _flatten_metrics(obj, out: dict) -> None:
+    """防御性展开 metrics JSON：数值项按名字累加，支持 {name, value} 列表结构与字符串值。"""
+    if isinstance(obj, dict):
+        if "name" in obj and "value" in obj and _num(obj.get("value")) is not None:
+            out[str(obj["name"])] = out.get(str(obj["name"]), 0) + _num(obj["value"])
+            return
+        for k, v in obj.items():
+            n = _num(v) if isinstance(k, str) else None
+            if n is not None:
+                out[k] = out.get(k, 0) + n
+            else:
+                _flatten_metrics(v, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            _flatten_metrics(item, out)
+
+
+def _pick(flat: dict, *keys: str):
+    """先精确匹配，再子串匹配。"""
+    for key in keys:
+        if key in flat:
+            return flat[key]
+    for key in keys:
+        for k, v in flat.items():
+            if key in k:
+                return v
+    return 0
+
+
+def collect_metrics(db: Session, job: Job) -> MetricSample | None:
+    """采集 source/sink 计数、QPS、字节数写 MetricSample；取不到返回 None。
+
+    注意：2.3.13 没有 /job-metrics 端点（旧实现一直 404，容量面板全 0），
+    指标内嵌在 GET /job-info/:jobId 的 metrics 字段，且值全是字符串。
+    """
+    if not job.seatunnel_job_id:
+        return None
+    info = st.job_info(db, job.env, job.seatunnel_job_id)
+    if not info:
+        return None
+    flat: dict = {}
+    _flatten_metrics(info.get("metrics") or {}, flat)
+    if not flat:
+        return None
+    sample = MetricSample(
+        job_id=job.id,
+        source_count=int(_pick(flat, "TableSourceReceivedCount", "SourceReceivedCount")),
+        sink_count=int(_pick(flat, "TableSinkWriteCount", "SinkWriteCount")),
+        source_qps=float(_pick(flat, "TableSourceReceivedQPS", "SourceReceivedQPS")),
+        sink_qps=float(_pick(flat, "TableSinkWriteQPS", "SinkWriteQPS")),
+        source_bytes=int(_pick(flat, "TableSourceReceivedBytes", "SourceReceivedBytes")),
+        sink_bytes=int(_pick(flat, "TableSinkWriteBytes", "SinkWriteBytes")),
+    )
+    db.add(sample)
+    db.commit()
+    return sample

@@ -169,10 +169,10 @@ def _apply_content(pkg: ProtoPackage, content: str, version: str, changed_status
     parsed = parse_proto(content)  # 解析失败抛异常，由调用方落 error
     old_parsed = pkg.parsed
     pkg.prev_content = pkg.content
-    pkg.prev_parsed_json = pkg.parsed_json
+    pkg.prev_parsed = pkg.parsed
     pkg.content = content
-    pkg.parsed_json = pkg._dumps(parsed)
-    pkg.diff_json = pkg._dumps(diff_parsed(old_parsed, parsed))
+    pkg.parsed = parsed
+    pkg.diff = diff_parsed(old_parsed, parsed)
     pkg.status = changed_status
     pkg.error = None
 

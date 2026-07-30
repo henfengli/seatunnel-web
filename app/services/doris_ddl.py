@@ -50,7 +50,7 @@ def _column_def(col: dict, variant_enabled: bool, model: str = "DUPLICATE",
     return ddl
 
 
-def _key_columns(mapping: list[dict], ttl: dict | None = None) -> list[str]:
+def key_columns(mapping: list[dict], ttl: dict | None = None) -> list[str]:
     """key 列规则：有 is_key 标记按标记（mapping 顺序，不截断——UNIQUE/AGG 的 key 是完整去重语义）；
     否则前 3 个非 nested 标量列（DUPLICATE 启发式）；ttl 列最前（Doris 要求分区列在 key 中）。"""
     marked = [m["doris_col"] for m in mapping if m.get("is_key")]
@@ -94,7 +94,7 @@ def build_create_table(
         ttl_num, ttl_unit, ttl_col = _ttl_parts(ttl)
         if ttl_unit not in ("HOUR", "DAY", "WEEK", "MONTH", "YEAR"):
             raise ValueError(f"Doris 动态分区不支持 {ttl_unit} 粒度（仅 HOUR/DAY/WEEK/MONTH/YEAR）")
-    key_cols = _key_columns(mapping, {"column": ttl_col} if ttl_col else None)
+    key_cols = key_columns(mapping, {"column": ttl_col} if ttl_col else None)
     if model in ("UNIQUE", "AGGREGATE") and not key_cols:
         raise ValueError(f"{model} 模型 key 列不能为空（字段映射为空？）")
     key_set = set(key_cols)
@@ -295,7 +295,7 @@ def compat_decision(old_cols: dict | None, show: dict | None, mapping: list[dict
     ttl_num = ttl_unit = None
     if ttl:
         ttl_num, ttl_unit, ttl_col = _ttl_parts(ttl)
-    desired_keys = _key_columns(mapping, {"column": ttl["column"]} if ttl else None)
+    desired_keys = key_columns(mapping, {"column": ttl["column"]} if ttl else None)
     # SHOW CREATE 的 key 列统一小写再比对（映射列名已规范化小写，外部建的表可能大写）
     old_keys = [k.lower() for k in show.get("key_cols", [])]
     if model in ("UNIQUE", "AGGREGATE") and set(desired_keys) != set(old_keys):
@@ -400,7 +400,7 @@ def diff_columns(doris: dict, db_name: str, table: str, mapping: list[dict],
         return False, [build_create_table(db_name, table, mapping, variant_enabled, buckets,
                                           replication_num, ttl, model)]
     existing_lower = {n.lower() for n in existing}
-    key_set = set(_key_columns(mapping)) if model == "AGGREGATE" else set()
+    key_set = set(key_columns(mapping)) if model == "AGGREGATE" else set()
     stmts = [
         f"ALTER TABLE `{db_name}`.`{table}` ADD COLUMN "
         f"{_column_def(m, variant_enabled, model, m['doris_col'] in key_set)}"
@@ -445,7 +445,7 @@ def ensure_table(doris: dict, db_name: str, table: str, mapping: list[dict],
         stmts.append(build_create_table(db_name, table, mapping, variant_enabled,
                                         buckets, replication_num, ttl, model))
     else:
-        key_cols = _key_columns(mapping, {"column": ttl["column"]} if ttl else None)
+        key_cols = key_columns(mapping, {"column": ttl["column"]} if ttl else None)
         key_set = set(key_cols)
         mapping_by_col = {m["doris_col"]: m for m in mapping}
         for col in compat["added"]:
