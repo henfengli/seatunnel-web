@@ -33,7 +33,7 @@ _KAFKA_PROTOCOLS = ("PLAINTEXT", "SASL_PLAINTEXT", "SASL_SSL", "SSL")
 _KAFKA_MECHANISMS = ("PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512")
 
 
-def _build_connection(ds_type: str, form) -> tuple[dict | None, str | None]:
+def build_connection(ds_type: str, form) -> tuple[dict | None, str | None]:
     """按类型从表单构建 connection dict；返回 (conn, 错误信息)。空密码 = 不修改。"""
     conn: dict = {}
     for key in _DS_REQUIRED[ds_type]:
@@ -105,7 +105,7 @@ async def datasource_create(request: Request, db: Session = Depends(get_db)):
         return _err("名称必填，仅限字母/数字/_.-，最长 128 字符")
     if ds_type not in DS_TYPES:
         return _err(f"非法数据源类型: {ds_type or '(空)'}")
-    conn, err = _build_connection(ds_type, form)
+    conn, err = build_connection(ds_type, form)
     if err:
         return _err(err)
     # 允许空密码（如本地 dev 环境），但 key 始终存在，结构统一
@@ -142,7 +142,7 @@ async def datasource_test_conn(request: Request, db: Session = Depends(get_db)):
         old = db.get(Datasource, int(form.get("ds_id") or 0))
     except (TypeError, ValueError):
         old = None
-    conn, err = _build_connection(ds_type, form)
+    conn, err = build_connection(ds_type, form)
     if err:
         return templates.TemplateResponse(request, "_test_result.html", {"results": [(False, err, "")]})
     if old is not None:  # 编辑时密码留空 = 用已存密码
@@ -197,7 +197,7 @@ async def datasource_update(request: Request, ds_id: int, db: Session = Depends(
         return _err("该数据源有作业引用，不能修改所属环境（防止跨环境错配）")
     if not _NAME_RE.match(name):
         return _err("名称必填，仅限字母/数字/_.-，最长 128 字符")
-    conn, err = _build_connection(ds.type, form)
+    conn, err = build_connection(ds.type, form)
     if err:
         return _err(err)
     conn.setdefault("password", ds.connection.get("password", ""))  # 留空 = 保留原密码

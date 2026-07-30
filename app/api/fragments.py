@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from ..core.crypto import sanitize_error
 from ..core.db import get_db
 from ..models import Datasource, Job, JobEvent, ProtoPackage
-from ..services import doris_ddl, envs, monitor, proto_center
-from ..services.field_mapping import append_timestamp_columns, build_mapping
+from ..services import doris_ddl, envs, mapping_gen, monitor
+from ..services.metadata import base as metadata
 from ..templating import templates
 
 router = APIRouter(prefix="/api")
@@ -58,52 +58,6 @@ def datasource_options(request: Request, env: str = "", ds_type: str = Query("",
     })
 
 
-def _source_objects(ds: Datasource) -> list[str]:
-    """从元数据缓存提取可选源对象：kafka->topics，pg->schema.table，
-    mongo->db.collection，doris->db.table。"""
-    md = ds.metadata_dict or {}
-    if ds.type == "kafka":
-        return md.get("topics", [])
-    if ds.type == "postgresql":
-        return [f"{s['name']}.{t['name']}"
-                for s in md.get("schemas", []) for t in s.get("tables", [])]
-    if ds.type == "mongodb":
-        return [f"{d['name']}.{c['name']}"
-                for d in md.get("databases", []) for c in d.get("collections", [])]
-    if ds.type == "doris":
-        return [f"{d['name']}.{t['name']}"
-                for d in md.get("databases", []) for t in d.get("tables", [])]
-    return []
-
-
-def _source_dbs(ds: Datasource) -> list[str]:
-    """两级级联第一级：库/schema 名列表（pg->schema，mongo/doris->database）。"""
-    md = ds.metadata_dict or {}
-    if ds.type == "postgresql":
-        return [s["name"] for s in md.get("schemas", [])]
-    if ds.type in ("mongodb", "doris"):
-        return [d["name"] for d in md.get("databases", [])]
-    return []
-
-
-def _source_tables(ds: Datasource, db_name: str) -> list[str]:
-    """两级级联第二级：指定库下的表/集合名列表。"""
-    md = ds.metadata_dict or {}
-    if ds.type == "postgresql":
-        for s in md.get("schemas", []):
-            if s.get("name") == db_name:
-                return [t["name"] for t in s.get("tables", [])]
-    elif ds.type == "mongodb":
-        for d in md.get("databases", []):
-            if d.get("name") == db_name:
-                return [c["name"] for c in d.get("collections", [])]
-    elif ds.type == "doris":
-        for d in md.get("databases", []):
-            if d.get("name") == db_name:
-                return [t["name"] for t in d.get("tables", [])]
-    return []
-
-
 def _objects_response(request: Request, db: Session, ds_id: int) -> HTMLResponse:
     """源对象选择片段：kafka -> topic + proto 包联动；数据库类 -> 库/表两级级联。"""
     ds = db.get(Datasource, ds_id)
@@ -112,7 +66,7 @@ def _objects_response(request: Request, db: Session, ds_id: int) -> HTMLResponse
     if ds.type == "kafka":
         return templates.TemplateResponse(request, "_source_objects.html", {
             "ds": ds,
-            "objects": _source_objects(ds),
+            "objects": metadata.source_objects(ds),
             "metadata_ready": ds.metadata_status == "ok" and ds.metadata_dict,
         })
     return _dbs_response(request, db, ds_id)
@@ -125,7 +79,7 @@ def _dbs_response(request: Request, db: Session, ds_id: int) -> HTMLResponse:
         return HTMLResponse('<div class="alert alert-error">数据源不存在</div>')
     return templates.TemplateResponse(request, "_source_dbs.html", {
         "ds": ds,
-        "dbs": _source_dbs(ds),
+        "dbs": metadata.source_dbs(ds),
         "metadata_ready": ds.metadata_status == "ok" and ds.metadata_dict,
     })
 
@@ -145,7 +99,7 @@ def datasource_batch_objects(request: Request, datasource_id: str = "",
     if not ds:
         return HTMLResponse('<div class="alert alert-error">数据源不存在</div>')
     return templates.TemplateResponse(request, "_batch_objects.html", {
-        "ds": ds, "objects": _source_objects(ds),
+        "ds": ds, "objects": metadata.source_objects(ds),
         "metadata_ready": ds.metadata_status == "ok" and ds.metadata_dict,
     })
 
@@ -158,7 +112,7 @@ def datasource_tables(request: Request, ds_id: int, db_name: str = Query("", ali
     if not ds:
         return HTMLResponse('<div class="alert alert-error">数据源不存在</div>')
     return templates.TemplateResponse(request, "_source_tables.html", {
-        "ds": ds, "db_name": db_name, "tables": _source_tables(ds, db_name),
+        "ds": ds, "db_name": db_name, "tables": metadata.source_tables(ds, db_name),
     })
 
 
@@ -277,31 +231,6 @@ def proto_messages(request: Request, proto_package_id: str = "", batch: str = ""
 
 # ---------------------------------------------------------------- 字段映射预览
 
-def _source_columns(ds: Datasource, source_ref: str) -> list[dict] | None:
-    """按 source_ref 从元数据缓存中取字段列表 [{"name","type",...}]。"""
-    md = ds.metadata_dict or {}
-    first, _, second = source_ref.partition(".")
-    if ds.type == "postgresql":
-        for s in md.get("schemas", []):
-            if s.get("name") == first:
-                for t in s.get("tables", []):
-                    if t.get("name") == second:
-                        return t.get("columns", [])
-    elif ds.type == "mongodb":
-        for d in md.get("databases", []):
-            if d.get("name") == first:
-                for c in d.get("collections", []):
-                    if c.get("name") == second:
-                        return c.get("fields", [])
-    elif ds.type == "doris":
-        for d in md.get("databases", []):
-            if d.get("name") == first:
-                for t in d.get("tables", []):
-                    if t.get("name") == second:
-                        return t.get("columns", [])
-    return None
-
-
 def _default_table(source_type: str, source_ref: str) -> str:
     """目标表默认值：{source_type}_{源表名}（源表名为 source_ref 最后一段，非法字符转 _）。"""
     source_name = source_ref.split(".")[-1]
@@ -337,35 +266,19 @@ def preview_mapping(request: Request, source_type: str = "", datasource_id: str 
                if k.startswith("flatten_") and v == "1"}
     ctx["flatten"] = flatten
 
-    # VARIANT 开关取自目标环境 Doris 配置
-    variant_enabled = True
-    if env and env in envs.env_names(db):
-        variant_enabled = bool(envs.get_env(db, env)["doris"].get("variant_enabled", True))
-
-    try:
-        if source_type == "kafka":
-            pkg = db.get(ProtoPackage, _to_int(proto_package_id))
-            if not pkg or not message_name:
-                ctx["hint"] = "请继续选择 proto 包与 message，然后自动生成字段映射"
-                return templates.TemplateResponse(request, "_mapping_table.html", ctx)
-            columns = proto_center.flattened_schema_fields(pkg, message_name, flatten)
-        else:
-            columns = _source_columns(ds, source_ref)
-            if columns is None:
-                ctx["error"] = (
-                    f"元数据中找不到 {source_ref}，请先到数据源详情页刷新元数据"
-                )
-                return templates.TemplateResponse(request, "_mapping_table.html", ctx)
-        if not columns:
-            ctx["error"] = "未获取到任何字段，无法生成映射"
+    pkg = None
+    if source_type == "kafka":
+        pkg = db.get(ProtoPackage, _to_int(proto_package_id))
+        if not pkg or not message_name:
+            ctx["hint"] = "请继续选择 proto 包与 message，然后自动生成字段映射"
             return templates.TemplateResponse(request, "_mapping_table.html", ctx)
-        mapping = build_mapping(source_type, columns, variant_enabled)
-        if add_timestamps == "on":
-            append_timestamp_columns(mapping, source_type)
-        ctx["mapping"] = mapping
-    except Exception as e:  # noqa: BLE001 - 预览失败回显错误条，不抛 500
-        ctx["error"] = f"生成映射失败: {e}"
+    mapping = mapping_gen.auto_mapping(db, env, source_type, ds, source_ref, pkg,
+                                       message_name, add_timestamps == "on", flatten)
+    if mapping is None:
+        ctx["error"] = (f"未获取到 {source_ref} 的字段（元数据缺失或 proto 解析失败），"
+                        f"请先到数据源详情页刷新元数据")
         return templates.TemplateResponse(request, "_mapping_table.html", ctx)
+    ctx["mapping"] = mapping
 
     ctx["default_table"] = _default_table(source_type, source_ref)
     return templates.TemplateResponse(request, "_mapping_table.html", ctx)
@@ -384,27 +297,13 @@ def batch_mapping(request: Request, p: str = "", db: Session = Depends(get_db)):
     env = q.get(f"{p}env", "")
     flatten = {k[len(p) + len("flatten_"):] for k, v in q.items()
                if k.startswith(f"{p}flatten_") and v == "1"}
-    variant_enabled = True
-    if env and env in envs.env_names(db):
-        variant_enabled = bool(envs.get_env(db, env)["doris"].get("variant_enabled", True))
-    mapping: list[dict] = []
-    error = None
-    try:
-        if source_type == "kafka":
-            pkg = db.get(ProtoPackage, _to_int(q.get(f"{p}pkg")))
-            if not pkg or not q.get(f"{p}msg"):
-                raise ValueError("缺少 proto 包或 message")
-            columns = proto_center.flattened_schema_fields(pkg, q[f"{p}msg"], flatten)
-        else:
-            columns = _source_columns(ds, source_ref) if ds else None
-        if not columns:
-            error = "未获取到任何字段，无法生成映射"
-        else:
-            mapping = build_mapping(source_type, columns, variant_enabled)
-            if q.get(f"{p}addts") == "on":
-                append_timestamp_columns(mapping, source_type)
-    except Exception as e:  # noqa: BLE001 - 预览失败回显错误条，不抛 500
-        error = f"生成映射失败: {e}"
+    pkg = None
+    if source_type == "kafka":
+        pkg = db.get(ProtoPackage, _to_int(q.get(f"{p}pkg")))
+    mapping = mapping_gen.auto_mapping(db, env, source_type, ds, source_ref, pkg,
+                                       q.get(f"{p}msg", ""), q.get(f"{p}addts") == "on",
+                                       flatten)
+    error = None if mapping is not None else "未获取到任何字段，无法生成映射（元数据缺失或 proto 解析失败）"
     return templates.TemplateResponse(request, "_batch_mapping.html", {
-        "p": p, "mapping": mapping, "error": error,
+        "p": p, "mapping": mapping or [], "error": error,
     })

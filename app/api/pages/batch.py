@@ -9,11 +9,10 @@ from starlette.concurrency import run_in_threadpool
 
 from ...core.db import get_db
 from ...models import DS_TYPES, BatchTask, Datasource, Job, ProtoPackage
-from ...services import batch_ops, envs, proto_center, render
-from ...services.field_mapping import append_timestamp_columns, build_mapping
+from ...services import batch_ops, envs, mapping_gen, render
 from ...templating import goto, templates
-from .common import _NAME_RE, _form_dict, form_error
-from .job import _IDENT_RE, _apply_model_ttl, _parse_mapping_form, _shared_options
+from .common import (IDENT_RE, _NAME_RE, _form_dict, apply_model_ttl, form_error,
+                     parse_mapping_form, shared_options)
 
 router = APIRouter()
 
@@ -126,27 +125,18 @@ def _batch_validate_shared(db: Session, ctx: dict):
             pkg = None
         if not pkg or not ctx["message_name"]:
             return None, None, "kafka 批量作业必须选择 proto 包与 message"
-    if not _IDENT_RE.match(ctx["doris_db"]):
+    if not IDENT_RE.match(ctx["doris_db"]):
         return None, None, "Doris 库名非法（字母/数字/下划线，不能以数字开头）"
     return ds, pkg, None
 
 
 def _batch_mapping_for(db: Session, ds: Datasource, pkg: ProtoPackage | None,
                        ctx: dict, source_ref: str, flatten=frozenset()) -> list[dict] | None:
-    """为单个源对象生成字段映射（kafka 走 proto，其余走元数据缓存）；无字段返回 None。"""
-    from ..fragments import _source_columns
-
-    variant_enabled = bool(envs.get_env(db, ctx["env"])["doris"].get("variant_enabled", True))
-    if ctx["source_type"] == "kafka":
-        columns = proto_center.flattened_schema_fields(pkg, ctx["message_name"], flatten)
-    else:
-        columns = _source_columns(ds, source_ref)
-    if not columns:
-        return None
-    mapping = build_mapping(ctx["source_type"], columns, variant_enabled)
-    if ctx["add_timestamps"] == "on":
-        append_timestamp_columns(mapping, ctx["source_type"])
-    return mapping
+    """为单个源对象生成字段映射（统一走 services 层的 auto_mapping）；无字段返回 None。"""
+    return mapping_gen.auto_mapping(db, ctx["env"], ctx["source_type"], ds, source_ref,
+                                    pkg, ctx["message_name"],
+                                    add_timestamps=ctx["add_timestamps"] == "on",
+                                    flatten=flatten)
 
 
 @router.get("/jobs/batch-new", response_class=HTMLResponse)
@@ -203,7 +193,7 @@ async def job_batch_create(request: Request, db: Session = Depends(get_db)):
     form = await request.form(max_fields=10000)
     ctx = _batch_shared_ctx(form)
     ds, pkg, serr = _batch_validate_shared(db, ctx)
-    shared, oerr = _shared_options(form)
+    shared, oerr = shared_options(form)
     if serr or oerr:
         return goto(request, "/jobs/batch-new", f"批量创建失败: {serr or oerr}", ok=False)
 
@@ -224,7 +214,7 @@ async def job_batch_create(request: Request, db: Session = Depends(get_db)):
         if not _NAME_RE.match(name):
             _fail("作业名非法（仅限字母/数字/_.-）")
             continue
-        if not _IDENT_RE.match(table):
+        if not IDENT_RE.match(table):
             _fail("目标表名非法（字母/数字/下划线，不能以数字开头）")
             continue
         if name in seen_names:
@@ -239,7 +229,7 @@ async def job_batch_create(request: Request, db: Session = Depends(get_db)):
         if dup:
             _fail(f"已有作业 {dup.name} 使用同一源对象（如需重建请先删除该作业）")
             continue
-        mapping, merr = _parse_mapping_form(form, p)
+        mapping, merr = parse_mapping_form(form, p)
         if merr:
             _fail(merr)
             continue
@@ -247,7 +237,7 @@ async def job_batch_create(request: Request, db: Session = Depends(get_db)):
             _fail("字段映射缺失（预览页该对象映射未生成）")
             continue
         options = dict(shared)
-        terr = _apply_model_ttl(lambda k, _p=p: form.get(f"{_p}{k}"), mapping, options)
+        terr = apply_model_ttl(lambda k, _p=p: form.get(f"{_p}{k}"), mapping, options)
         if terr:
             _fail(terr)
             continue

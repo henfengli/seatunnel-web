@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ...core.db import get_db
@@ -16,22 +15,13 @@ router = APIRouter()
 
 # ---------------------------------------------------------------- 总览
 
-def status_counts(db: Session) -> dict[str, dict[str, int]]:
-    """一次 GROUP BY 聚合 {env: {status: 数量}}，供总览/环境列表共用，避免逐环境多次 COUNT。"""
-    counts: dict[str, dict[str, int]] = {}
-    for env_name, status, cnt in (
-            db.query(Job.env, Job.status, func.count()).group_by(Job.env, Job.status).all()):
-        counts.setdefault(env_name, {})[status] = cnt
-    return counts
-
-
 @router.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db)):
-    counts = status_counts(db)
+    counts = envs.job_status_counts(db)
     env_cards = []
     for env in envs.list_envs(db):
         c = counts.get(env.name, {})
-        h_status, h_title = health.env_aggregate(env.health_json)
+        h_status, h_title = health.env_aggregate(env.health)
         env_cards.append({
             "id": env.id,
             "name": env.name,
