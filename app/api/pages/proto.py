@@ -155,7 +155,7 @@ async def proto_update(request: Request, pkg_id: int, db: Session = Depends(get_
 
     def _err(msg: str):
         return form_error(request, "proto_form.html", msg,
-                          active="protos", pkg=pkg, form={})
+                          active="protos", pkg=pkg, form=form_dict(form))
 
     name = _strip_proto_suffix((form.get("name") or "").strip())
     if not NAME_RE.match(name):

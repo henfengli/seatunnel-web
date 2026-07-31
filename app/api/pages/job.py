@@ -1,6 +1,7 @@
 """作业管理：列表/新建/详情/编辑/提交编排/复制/删除/监控面板/目标表重建。"""
 from __future__ import annotations
 
+import copy
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Request
@@ -332,7 +333,7 @@ async def job_copy(request: Request, job_id: int, db: Session = Depends(get_db))
         source_type=job.source_type, datasource_id=target_ds.id,
         source_ref=job.source_ref, doris_db=job.doris_db, doris_table=job.doris_table,
         proto_package_id=job.proto_package_id, message_name=job.message_name,
-        field_mapping=job.field_mapping, options=job.options,
+        field_mapping=copy.deepcopy(job.field_mapping), options=copy.deepcopy(job.options),
         status="DRAFT",
     )
     new_job.datasource = target_ds

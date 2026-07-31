@@ -143,7 +143,7 @@ def stop(db: Session, job: Job, with_savepoint: bool = True) -> dict:
     try:
         # 注意：/stop-job 只接受 JSON 请求体（query 参数会 400）
         st.post(db, job.env, "/stop-job",
-              json={"jobId": int(job.seatunnel_job_id), "isStopWithSavePoint": with_savepoint})
+                json={"jobId": int(job.seatunnel_job_id), "isStopWithSavePoint": with_savepoint})
         job.status = "STOPPED"
         _event(db, job, "stop", f"isStopWithSavePoint={with_savepoint}")
         db.add(job)

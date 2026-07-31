@@ -61,3 +61,32 @@ def test_goto_truncates_flash():
 def test_human_bytes():
     check("格式化", human_bytes(2048000) == "2.0MB" and human_bytes(512) == "512B")
     check("非法输入降级", human_bytes("abc") == "-" and human_bytes(None) == "0B")
+
+
+def test_json_dict_mutable_tracking(db):
+    """JsonDict + MutableDict/MutableList：顶层键/元素原地改必须落库（嵌套变更仍需整体重赋值）。"""
+    from app.models import Job, Datasource, Environment
+
+    env = db.query(Environment).filter_by(name="mut").first()
+    if env is None:
+        env = Environment(name="mut", doris_fenodes="f:8030")
+        db.add(env)
+    ds = db.query(Datasource).filter_by(env="mut", name="mut").first()
+    if ds is None:
+        ds = Datasource(env="mut", name="mut", type="kafka", connection={"servers": "k:9092"})
+        db.add(ds)
+    db.commit()
+    job = Job(name="mut_track", env="mut", biz_line="b", source_type="kafka",
+              datasource_id=ds.id, source_ref="t", doris_db="d", doris_table="t",
+              field_mapping=[{"source": "a"}], options={"parallelism": 1})
+    db.add(job)
+    db.commit()
+    jid = job.id
+
+    job.options["parallelism"] = 4          # 顶层键原地改
+    job.field_mapping.append({"source": "b"})  # list 元素原地加
+    db.commit()
+    db.expire_all()
+    fresh = db.get(Job, jid)
+    check("dict 顶层原地改落库", fresh.options["parallelism"] == 4, str(fresh.options))
+    check("list 原地 append 落库", len(fresh.field_mapping) == 2, str(fresh.field_mapping))
