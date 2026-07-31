@@ -13,7 +13,7 @@ from app.services import doris_ddl, field_mapping, proto_center, render
 from app.services.metadata import mongo_d
 from app.templating import _mask_conf
 
-from .conftest import check
+from .helpers import check
 
 FLAT_PROTO = '''
 syntax = "proto3";

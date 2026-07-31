@@ -12,7 +12,7 @@ import pytest
 from app.models import Datasource, Environment, Job, JobEvent
 from app.services import doris_ddl, orchestrator
 
-from .conftest import check
+from .helpers import check
 
 
 

@@ -10,7 +10,7 @@ from app.models import Environment
 from app.services import envs
 from app.templating import goto
 
-from .conftest import check
+from .helpers import check
 
 _SEED_YAML = {
     "seeded": {
