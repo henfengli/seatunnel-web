@@ -10,6 +10,8 @@
 7. metadata/base.py 的 source_* 导航函数     库/表/列浏览 if-elif
 8. templating._ds_addr                      列表页地址展示
 9. 表单模板（datasource_form.html 等）       类型显隐联动
+10. render.render_conf 的 mongo_cdc 特判     cdc 模板选择/enable_delete 分支
+11. 批量向导模板（job_batch_form.html）      逐对象表单的类型显隐
 """
 from __future__ import annotations
 
