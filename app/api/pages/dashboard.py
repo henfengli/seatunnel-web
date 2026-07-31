@@ -25,7 +25,7 @@ def dashboard(request: Request, db: Session = Depends(get_db)):
         env_cards.append({
             "id": env.id,
             "name": env.name,
-            "masters": [m.split("://")[-1] for m in envs.parse_masters(env.seatunnel_masters)],
+            "masters": envs.master_hosts(env),
             "fenodes": env.doris_fenodes,
             "job_count": sum(c.values()),
             "running_count": c.get("RUNNING", 0),

@@ -18,6 +18,11 @@ def parse_masters(raw: str | None) -> list[str]:
     return [m for m in _MASTER_SPLIT.split(raw or "") if m]
 
 
+def master_hosts(env: Environment) -> list[str]:
+    """masters 的 host:port 列表（展示用，去 scheme）。"""
+    return [m.split("://")[-1] for m in parse_masters(env.seatunnel_masters)]
+
+
 def to_dict(env: Environment) -> dict:
     """转成与旧 YAML 相同的形状，供服务层使用（密码字段在此解密）。"""
     return {
