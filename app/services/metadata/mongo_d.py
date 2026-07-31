@@ -7,7 +7,7 @@ _SAMPLE_LIMIT = 20
 _SYSTEM_DBS = ("admin", "local", "config")
 
 
-def _build_uri(conn: dict) -> str:
+def build_uri(conn: dict) -> str:
     """优先使用 conn.uri，否则按 host/port/username/password 拼接（用户名/密码 URL 编码）。"""
     if conn.get("uri"):
         return conn["uri"]
@@ -117,7 +117,7 @@ def discover(conn: dict) -> dict:
     """
     from pymongo import MongoClient
 
-    client = MongoClient(_build_uri(conn), serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
+    client = MongoClient(build_uri(conn), serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
     try:
         databases = []
         for db_name in client.list_database_names():

@@ -14,20 +14,20 @@ from ...core.db import get_db
 from ...models import Datasource, Environment, Job
 from ...services import envs, health, monitor
 from ...templating import goto, templates
-from .common import _form_dict, form_error
+from .common import form_dict, form_error
 
 router = APIRouter()
 
 
 # ---------------------------------------------------------------- 环境
 
-_ENV_NAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,32}$")
+_ENVNAME_RE = re.compile(r"^[A-Za-z0-9_\-]{1,32}$")
 
 
 def _env_form_apply(e: Environment, form) -> str | None:
     """校验表单并填充环境字段；密码/Auth 留空 = 不修改。返回错误信息或 None。"""
     name = (form.get("name") or "").strip()
-    if not _ENV_NAME_RE.match(name):
+    if not _ENVNAME_RE.match(name):
         return "名称必填，仅限字母/数字/下划线/中划线，最长 32 字符"
     masters = (form.get("seatunnel_masters") or "").strip()
     if not envs.parse_masters(masters):
@@ -97,7 +97,7 @@ async def environment_create(request: Request, db: Session = Depends(get_db)):
 
     def _err(msg: str):
         return form_error(request, "environment_form.html", msg,
-                          active="environments", env=None, form=_form_dict(form), health=None)
+                          active="environments", env=None, form=form_dict(form), health=None)
 
     env = Environment()
     err = _env_form_apply(env, form)
@@ -193,7 +193,7 @@ async def environment_update(request: Request, env_id: int, db: Session = Depend
 
     def _err(msg: str):
         return form_error(request, "environment_form.html", msg,
-                          active="environments", env=env, form=_form_dict(form),
+                          active="environments", env=env, form=form_dict(form),
                           health=health.env_aggregate(env.health))
 
     old_name = env.name

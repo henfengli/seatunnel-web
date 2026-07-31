@@ -461,7 +461,7 @@ def test_security_regressions(db):
 
     check("URI 密码脱敏", "mongodb://u:****@h:27017/" in sanitize_error(
         "InvalidURI: mongodb://u:p%40ss@h:27017/?authSource=admin"))
-    uri = mongo_d._build_uri({"host": "mg", "port": 27017, "username": "u@x", "password": "p@ss/w"})
+    uri = mongo_d.build_uri({"host": "mg", "port": 27017, "username": "u@x", "password": "p@ss/w"})
     check("mongo URI 编码", "u%40x:p%40ss%2Fw@mg:27017" in uri, uri)
 
     conn, err = build_connection("postgresql", FormData(

@@ -14,7 +14,7 @@ from ...models import DS_TYPES, JOB_STATUSES, Datasource, Job, JobEvent, ProtoPa
 from ...services import (doris_ddl, envs, mapping_gen, monitor, orchestrator, render,
                          seatunnel_client as st)
 from ...templating import goto, templates
-from .common import (IDENT_RE, _NAME_RE, _form_dict, collect_options,
+from .common import (IDENT_RE, NAME_RE, form_dict, collect_options,
                      form_error, parse_mapping_form)
 
 router = APIRouter()
@@ -56,7 +56,7 @@ async def job_create(request: Request, db: Session = Depends(get_db)):
     def _err(msg: str):
         return form_error(request, "job_form.html", msg,
                           active="jobs", env_names=envs.env_names(db), ds_types=DS_TYPES,
-                          form=_form_dict(form), job=None, mapping=[], joptions={}, add_ts=True)
+                          form=form_dict(form), job=None, mapping=[], joptions={}, add_ts=True)
 
     name = (form.get("name") or "").strip()
     env = (form.get("env") or "").strip()
@@ -68,7 +68,7 @@ async def job_create(request: Request, db: Session = Depends(get_db)):
     # 业务线概念并入目标 Doris 库（容量面板按它聚合），不再让用户填写
     biz_line = doris_db
 
-    if not _NAME_RE.match(name):
+    if not NAME_RE.match(name):
         return _err("作业名称必填，仅限字母/数字/_.-")
     if env not in envs.env_names(db):
         return _err("请选择环境")
@@ -187,7 +187,7 @@ async def job_edit_save(request: Request, job_id: int, db: Session = Depends(get
 
     def _err(msg: str):
         return templates.TemplateResponse(request, "job_form.html",
-                                          _job_form_ctx(db, job, _form_dict(form), msg),
+                                          _job_form_ctx(db, job, form_dict(form), msg),
                                           status_code=400)
 
     tags = (form.get("tags") or "").strip()
@@ -318,7 +318,7 @@ async def job_copy(request: Request, job_id: int, db: Session = Depends(get_db))
     new_name = (form.get("new_name") or "").strip() or f"{job.name}_copy"
     if target_env not in envs.env_names(db):
         return goto(request, f"/jobs/{job_id}", "目标环境非法", ok=False)
-    if not _NAME_RE.match(new_name):
+    if not NAME_RE.match(new_name):
         return goto(request, f"/jobs/{job_id}", "新作业名称非法", ok=False)
     try:
         target_ds = db.get(Datasource, int(form.get("target_datasource_id") or 0))

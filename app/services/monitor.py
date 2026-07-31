@@ -141,7 +141,7 @@ def doris_cluster(db: Session, env_name: str) -> dict:
             result["error"] = str(e)
             return result
         try:
-            c = doris_ddl._connect(doris)
+            c = doris_ddl.connect(doris)
         except Exception as e:  # noqa: BLE001
             result["error"] = sanitize_error(str(e))[:300]
             return result
@@ -168,7 +168,7 @@ def doris_cluster(db: Session, env_name: str) -> dict:
                 )
                 result["dbs"] = [
                     {"name": r[0], "tables": r[1]}
-                    for r in cur.fetchall() if r[0] not in doris_ddl._SYSTEM_DBS
+                    for r in cur.fetchall() if r[0] not in doris_ddl.SYSTEM_DBS
                 ]
             result["reachable"] = True
         except Exception as e:  # noqa: BLE001
@@ -293,13 +293,13 @@ def kafka_lag(db: Session, job: Job) -> dict | None:
     try:
         from kafka import KafkaConsumer, TopicPartition
 
-        from .metadata.kafka_d import _admin_kwargs
+        from .metadata.kafka_d import admin_kwargs
 
         conn = decrypt_conn(job.datasource.connection)
         group = job.options.get("consumer_group") or job.name
         topic = job.source_ref
         consumer = KafkaConsumer(group_id=group, enable_auto_commit=False,
-                                 **_admin_kwargs(conn, request_timeout_ms=5000))
+                                 **admin_kwargs(conn, request_timeout_ms=5000))
         try:
             tps = [TopicPartition(topic, p)
                    for p in consumer.partitions_for_topic(topic) or set()]
@@ -334,7 +334,7 @@ def doris_table_stats(db: Session, job: Job) -> dict:
     result = {"size_bytes": 0, "size_human": "-", "partitions": 0, "error": None}
     try:
         doris = envs.get_env(db, job.env)["doris"]
-        c = doris_ddl._connect(doris)
+        c = doris_ddl.connect(doris)
         try:
             with c.cursor() as cur:
                 cur.execute(f"SHOW DATA FROM `{job.doris_db}`.`{job.doris_table}`")
@@ -355,7 +355,7 @@ def doris_table_rows(db: Session, job: Job) -> dict:
     result = {"rows": None, "error": None}
     try:
         doris = envs.get_env(db, job.env)["doris"]
-        c = doris_ddl._connect(doris)
+        c = doris_ddl.connect(doris)
         try:
             with c.cursor() as cur:
                 cur.execute(f"SELECT COUNT(*) FROM `{job.doris_db}`.`{job.doris_table}`")

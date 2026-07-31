@@ -13,7 +13,7 @@ from ...models import DS_TYPES, Datasource, Job
 from ...services import envs, health
 from ...services.metadata import base as metadata
 from ...templating import goto, templates
-from .common import _NAME_RE, _form_dict, form_error
+from .common import NAME_RE, form_dict, form_error
 
 router = APIRouter()
 
@@ -93,7 +93,7 @@ async def datasource_create(request: Request, db: Session = Depends(get_db)):
 
     def _err(msg: str):
         return form_error(request, "datasource_form.html", msg,
-                          active="datasources", ds=None, conn=_form_dict(form),
+                          active="datasources", ds=None, conn=form_dict(form),
                           env_names=envs.env_names(db), ds_types=DS_TYPES)
 
     env = (form.get("env") or "").strip()
@@ -101,7 +101,7 @@ async def datasource_create(request: Request, db: Session = Depends(get_db)):
     ds_type = (form.get("type") or "").strip()
     if env not in envs.env_names(db):
         return _err(f"非法环境: {env or '(空)'}")
-    if not _NAME_RE.match(name):
+    if not NAME_RE.match(name):
         return _err("名称必填，仅限字母/数字/_.-，最长 128 字符")
     if ds_type not in DS_TYPES:
         return _err(f"非法数据源类型: {ds_type or '(空)'}")
@@ -186,7 +186,7 @@ async def datasource_update(request: Request, ds_id: int, db: Session = Depends(
 
     def _err(msg: str):
         return form_error(request, "datasource_form.html", msg,
-                          active="datasources", ds=ds, conn={**ds.connection, **_form_dict(form)},
+                          active="datasources", ds=ds, conn={**ds.connection, **form_dict(form)},
                           env_names=envs.env_names(db), ds_types=DS_TYPES)
 
     env = (form.get("env") or "").strip()
@@ -195,7 +195,7 @@ async def datasource_update(request: Request, ds_id: int, db: Session = Depends(
         return _err(f"非法环境: {env or '(空)'}")
     if env != ds.env and db.query(Job).filter(Job.datasource_id == ds.id).count():
         return _err("该数据源有作业引用，不能修改所属环境（防止跨环境错配）")
-    if not _NAME_RE.match(name):
+    if not NAME_RE.match(name):
         return _err("名称必填，仅限字母/数字/_.-，最长 128 字符")
     conn, err = build_connection(ds.type, form)
     if err:

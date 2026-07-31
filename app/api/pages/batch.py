@@ -11,7 +11,7 @@ from ...core.db import get_db
 from ...models import DS_TYPES, BatchTask, Datasource, Job, ProtoPackage
 from ...services import batch_ops, envs, mapping_gen, render
 from ...templating import goto, templates
-from .common import (IDENT_RE, _NAME_RE, _form_dict, apply_model_ttl, form_error,
+from .common import (IDENT_RE, NAME_RE, form_dict, apply_model_ttl, form_error,
                      parse_mapping_form, shared_options)
 
 router = APIRouter()
@@ -157,7 +157,7 @@ async def job_batch_preview(request: Request, db: Session = Depends(get_db)):
     def _err(msg: str):
         return form_error(request, "job_batch_form.html", msg,
                           active="jobs", env_names=envs.env_names(db), ds_types=DS_TYPES,
-                          form=_form_dict(form))
+                          form=form_dict(form))
 
     ds, pkg, err = _batch_validate_shared(db, ctx)
     if err:
@@ -211,7 +211,7 @@ async def job_batch_create(request: Request, db: Session = Depends(get_db)):
             results.append({"ref": _ref, "name": _name, "ok": False,
                             "error": reason, "job": None})
 
-        if not _NAME_RE.match(name):
+        if not NAME_RE.match(name):
             _fail("作业名非法（仅限字母/数字/_.-）")
             continue
         if not IDENT_RE.match(table):

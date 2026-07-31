@@ -12,7 +12,7 @@ from ...core.db import get_db
 from ...models import Job, ProtoPackage
 from ...services import proto_center
 from ...templating import goto, templates
-from .common import _NAME_RE, _form_dict, form_error
+from .common import NAME_RE, form_dict, form_error
 
 router = APIRouter()
 
@@ -46,13 +46,13 @@ async def proto_create(request: Request, db: Session = Depends(get_db)):
 
     def _err(msg: str):
         return form_error(request, "proto_form.html", msg,
-                          active="protos", pkg=None, form=_form_dict(form))
+                          active="protos", pkg=None, form=form_dict(form))
 
     name = _strip_proto_suffix((form.get("name") or "").strip())
     source_url = (form.get("source_url") or "").strip()
     content = (form.get("content") or "").strip()
     auth_header = (form.get("auth_header") or "").strip()
-    if not _NAME_RE.match(name):
+    if not NAME_RE.match(name):
         return _err("名称必填，仅限字母/数字/_.-，最长 128 字符")
     if not source_url and not content:
         return _err("请填写来源 URL 或直接粘贴 proto 内容")
@@ -91,7 +91,7 @@ async def proto_upload(request: Request, db: Session = Depends(get_db),
     created, skipped, failed = [], [], []
     for f in files:
         name = _strip_proto_suffix((f.filename or "").rsplit("/", 1)[-1].strip())
-        if not name or not _NAME_RE.match(name):
+        if not name or not NAME_RE.match(name):
             failed.append(f"{f.filename}（文件名不合法）")
             continue
         if db.query(ProtoPackage).filter(ProtoPackage.name == name).first():
@@ -158,7 +158,7 @@ async def proto_update(request: Request, pkg_id: int, db: Session = Depends(get_
                           active="protos", pkg=pkg, form={})
 
     name = _strip_proto_suffix((form.get("name") or "").strip())
-    if not _NAME_RE.match(name):
+    if not NAME_RE.match(name):
         return _err("名称必填，仅限字母/数字/_.-，最长 128 字符")
     try:
         poll_interval = max(60, int(form.get("poll_interval_sec") or 3600))

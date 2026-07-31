@@ -7,7 +7,7 @@ from fastapi import Request
 
 from ...templating import templates
 
-_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # Doris 类型白名单（防 map_doris_type 注入 DDL）：INT/VARCHAR(10)/DECIMAL(38,10)/DATETIMEV2(3) 等
 DORIS_TYPE_RE = re.compile(r"^[A-Z]+(V2)?(\(\d+(,\s*\d+)?\))?$")
@@ -15,7 +15,7 @@ DORIS_TYPE_RE = re.compile(r"^[A-Z]+(V2)?(\(\d+(,\s*\d+)?\))?$")
 DEFAULT_RE = re.compile(r"^(CURRENT_TIMESTAMP(\(3\))?|\d+|'([^']|'')*')$")
 
 
-def _form_dict(form) -> dict:
+def form_dict(form) -> dict:
     """Starlette FormData -> 普通 dict（仅保留 str 值），用于校验失败时回显。"""
     return {k: v for k, v in form.items() if isinstance(v, str)}
 

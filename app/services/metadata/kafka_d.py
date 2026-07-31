@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-def _admin_kwargs(conn: dict, request_timeout_ms: int = 8000) -> dict:
+def admin_kwargs(conn: dict, request_timeout_ms: int = 8000) -> dict:
     """KafkaAdminClient 连接参数（SASL_* 协议按 kafka-python 参数名透传，PLAIN/SCRAM 均用 sasl_plain_*）。
 
     conn 为明文连接信息（由调用方解密），健康检查与元数据发现共用。
@@ -25,7 +25,7 @@ def discover(conn: dict) -> dict:
     """返回 {"topics": [...], "consumer_groups": [...]}（groups 拉不到则为空）。"""
     from kafka import KafkaAdminClient
 
-    admin = KafkaAdminClient(**_admin_kwargs(conn))
+    admin = KafkaAdminClient(**admin_kwargs(conn))
     try:
         topics = sorted(t for t in admin.list_topics() if not t.startswith("__"))
         groups: list[str] = []
