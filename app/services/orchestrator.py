@@ -32,30 +32,6 @@ def _fail(db: Session, job: Job, event: str, message: str) -> dict:
     return {"ok": False, "error": message}
 
 
-def job_ttl(job: Job) -> dict | None:
-    """从作业高级选项取 TTL 配置 {"num","unit","column"}；兼容老数据 options["ttl_days"]（按 DAY）。"""
-    opts = job.options
-    column = opts.get("ttl_column")
-    num = opts.get("ttl_num") or opts.get("ttl_days")
-    if num and column:
-        ttl = {"num": int(num), "unit": opts.get("ttl_unit", "DAY"), "column": column}
-        if opts.get("ttl_history_num"):
-            ttl["history_num"] = int(opts["ttl_history_num"])
-        return ttl
-    return None
-
-
-def job_buckets(job: Job) -> int | None:
-    """从作业高级选项取分桶数覆盖，未配置返回 None（用环境默认值）。"""
-    v = job.options.get("buckets")
-    return int(v) if v else None
-
-
-def job_model(job: Job) -> str:
-    """目标 Doris 表模型（默认 DUPLICATE；options["table_model"] 仅在 UNIQUE 时存储）。"""
-    return job.options.get("table_model", "DUPLICATE")
-
-
 def _find_running_conflict(db: Session, job: Job) -> Job | None:
     """防双作业重复消费：查同 env + 同数据源 + 同源对象的 RUNNING 作业（排除自身）。"""
     return (
@@ -125,7 +101,7 @@ def submit(db: Session, job: Job, start_with_savepoint: bool = False) -> dict:
     try:
         ddl_res = doris_ddl.ensure_table(
             envs.get_env(db, job.env)["doris"], job.doris_db, job.doris_table, job.field_mapping,
-            job_ttl(job), job_model(job), job_buckets(job))
+            job.ttl, job.table_model, job.buckets)
         if ddl_res.get("needs_recreate"):
             return _abort(_needs_recreate_msg(ddl_res.get("reasons") or []),
                           needs_recreate=True)
@@ -227,7 +203,7 @@ def update_and_restart(db: Session, job: Job, note: str = "") -> dict:
     try:
         pre = doris_ddl.ensure_table(
             envs.get_env(db, job.env)["doris"], job.doris_db, job.doris_table, job.field_mapping,
-            job_ttl(job), job_model(job), job_buckets(job), dry_run=True)
+            job.ttl, job.table_model, job.buckets, dry_run=True)
     except Exception as e:  # noqa: BLE001
         msg = f"目标表兼容性预检失败（Doris 不可达？）: {e}"
         _event(db, job, "update", msg)
@@ -293,7 +269,7 @@ def update_and_restart(db: Session, job: Job, note: str = "") -> dict:
     try:
         ddl_res = doris_ddl.ensure_table(
             envs.get_env(db, job.env)["doris"], job.doris_db, job.doris_table, job.field_mapping,
-            job_ttl(job), job_model(job), job_buckets(job))
+            job.ttl, job.table_model, job.buckets)
         _event(db, job, "ddl", ddl_res["ddl"])
         if ddl_res.get("needs_recreate"):
             # 预检后表结构被并发改动才可能走到这；拒绝并回滚状态

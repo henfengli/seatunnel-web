@@ -10,8 +10,9 @@ from starlette.concurrency import run_in_threadpool
 from ...core.db import get_db
 from ...models import DS_TYPES, BatchTask, Datasource, Job, ProtoPackage
 from ...services import batch_ops, envs, mapping_gen, render
+from ...services.field_mapping import apply_model_ttl
 from ...templating import goto, templates
-from .common import (IDENT_RE, NAME_RE, form_dict, apply_model_ttl, form_error,
+from .common import (IDENT_RE, NAME_RE, form_dict, form_error,
                      parse_mapping_form, shared_options)
 
 router = APIRouter()

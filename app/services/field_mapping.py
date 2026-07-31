@@ -175,3 +175,69 @@ def append_timestamp_columns(mapping: list[dict], source_type: str) -> list[dict
             "note": "入库时间（Doris 自动填入）",
         })
     return mapping
+
+
+def apply_model_ttl(get, mapping: list[dict], options: dict) -> str | None:
+    """表模型（key/聚合校验）+ TTL 应用到 mapping/options；get 为表单取值 callable。
+
+    返回错误信息或 None。批量建作业时 get 按对象前缀取值，实现逐对象模型/TTL。
+    """
+    # 目标表模型：仅非默认时存储（DUPLICATE 为默认，保持 options 干净）
+    table_model = (get("table_model") or "").strip().upper()
+    if table_model in ("UNIQUE", "AGGREGATE"):
+        options["table_model"] = table_model
+    elif table_model == "DUPLICATE":
+        for m in mapping:
+            m.pop("is_key", None)  # DUPLICATE 忽略行级 key 标记（UI 已隐藏，双保险）
+    if table_model == "AGGREGATE":
+        for m in mapping:
+            if m.get("nested") or m["doris_type"] == "VARIANT":
+                return f"AGGREGATE 模型不支持 nested/VARIANT 列: {m['doris_col']}"
+            t = m["doris_type"]
+            if (t == "STRING" or t.startswith("VARCHAR")) \
+                    and m.get("agg", "REPLACE") != "REPLACE":
+                return f"VARCHAR/STRING 列只允许 REPLACE 聚合: {m['doris_col']}"
+    # TTL（动态分区留存）：数值 + 粒度单位；填了数值就必须选时间字段
+    ttl_num_raw = (get("ttl_num") or get("ttl_days") or "").strip()
+    if ttl_num_raw:
+        try:
+            ttl_num = int(ttl_num_raw)
+        except ValueError:
+            return "TTL 留存时长必须是整数"
+        if ttl_num < 1:
+            return "TTL 留存时长必须 >= 1"
+        ttl_unit = (get("ttl_unit") or "DAY").strip().upper()
+        if ttl_unit not in ("HOUR", "DAY", "WEEK", "MONTH"):
+            return f"TTL 粒度非法: {ttl_unit}（Doris 动态分区仅支持 HOUR/DAY/WEEK/MONTH）"
+        ttl_col = (get("ttl_column") or "").strip()
+        if not ttl_col:
+            return "设置了 TTL 留存时长，请选择 TTL 时间字段"
+        col = next((m for m in mapping if m["doris_col"] == ttl_col), None)
+        if col is None:
+            return f"TTL 时间字段不在字段映射中: {ttl_col}"
+        col_type = col["doris_type"]
+        if col_type == "BIGINT":
+            # epoch 整数列：以 DATETIMEV2(3) 存储，stream load 时 from_millisecond 转换
+            # （毫秒/微秒/纳秒按数值量级在表达式里自适应，见 render._epoch_expr）
+            col["ms_epoch"] = True
+            col["doris_type"] = "DATETIMEV2(3)"
+        elif col_type == "STRING":
+            # 日期格式字符串列（'yyyy-MM-dd'）：以 DATE 存储，Doris 直接解析无需转换
+            col["doris_type"] = "DATE"
+        elif not col_type.startswith(("DATE", "DATETIME")):
+            return f"TTL 时间字段必须是 DATE/DATETIME/BIGINT(epoch 毫秒)/STRING(日期字符串) 类型列: {ttl_col}"
+        options["ttl_num"] = ttl_num
+        options["ttl_unit"] = ttl_unit
+        options["ttl_column"] = ttl_col
+        # 预建历史分区数（可选）：全量/存量同步时，数据落在动态分区窗口（start~end）之外
+        # 会整批失败（no partition for this tuple）；预建历史分区后先灌入、TTL 到期自清理
+        history_raw = (get("ttl_history_num") or "").strip()
+        if history_raw:
+            try:
+                history_num = int(history_raw)
+            except ValueError:
+                return "TTL 预建历史分区数必须是整数"
+            if history_num < 1:
+                return "TTL 预建历史分区数必须 >= 1"
+            options["ttl_history_num"] = history_num
+    return None

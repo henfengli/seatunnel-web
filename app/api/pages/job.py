@@ -401,13 +401,13 @@ def _recreate_ctx(db: Session, job: Job) -> dict:
     try:
         compat = doris_ddl.check_compat(
             envs.get_env(db, job.env)["doris"], job.doris_db, job.doris_table,
-            job.field_mapping, orchestrator.job_ttl(job), orchestrator.job_model(job), orchestrator.job_buckets(job))
+            job.field_mapping, job.ttl, job.table_model, job.buckets)
         ctx["compat"] = compat
         if compat["exists"]:
             variant = bool(envs.get_env(db, job.env)["doris"].get("variant_enabled", True))
             desired_keys = doris_ddl.key_columns(
                 job.field_mapping,
-                {"column": orchestrator.job_ttl(job)["column"]} if orchestrator.job_ttl(job) else None)
+                {"column": job.ttl["column"]} if job.ttl else None)
             plan, dropped = doris_ddl.build_migration_plan(
                 compat["old_cols"], job.field_mapping, variant, desired_keys)
             ctx["plan"] = plan
@@ -453,7 +453,7 @@ async def job_recreate_table(request: Request, job_id: int, db: Session = Depend
         try:
             res = await run_in_threadpool(doris_ddl.recreate_table,
                 doris, job.doris_db, job.doris_table,
-                job.field_mapping, orchestrator.job_ttl(job), orchestrator.job_model(job), orchestrator.job_buckets(job))
+                job.field_mapping, job.ttl, job.table_model, job.buckets)
             db.add(JobEvent(job_id=job.id, event="ddl",
                             detail=f"删表重建 {job.doris_db}.{job.doris_table}:\n{res['ddl']}"))
             db.commit()
@@ -469,13 +469,13 @@ async def job_recreate_table(request: Request, job_id: int, db: Session = Depend
 
     compat = await run_in_threadpool(
         doris_ddl.check_compat, doris, job.doris_db, job.doris_table, job.field_mapping,
-        orchestrator.job_ttl(job), orchestrator.job_model(job), orchestrator.job_buckets(job))
+        job.ttl, job.table_model, job.buckets)
     if not compat["exists"]:
         return goto(request, f"/jobs/{job.id}",
                     "目标表不存在，无需迁移（直接提交作业即可自动建表）", ok=False)
     variant = bool(doris.get("variant_enabled", True))
     desired_keys = doris_ddl.key_columns(
-        job.field_mapping, {"column": orchestrator.job_ttl(job)["column"]} if orchestrator.job_ttl(job) else None)
+        job.field_mapping, {"column": job.ttl["column"]} if job.ttl else None)
     plan, _dropped = doris_ddl.build_migration_plan(
         compat["old_cols"], job.field_mapping, variant, desired_keys)
     decisions = {k: v for k, v in form.items() if isinstance(v, str)}
@@ -512,7 +512,7 @@ async def job_recreate_table(request: Request, job_id: int, db: Session = Depend
     try:
         mig = await run_in_threadpool(doris_ddl.migrate_table,
             doris, job.doris_db, job.doris_table, job.field_mapping,
-            orchestrator.job_ttl(job), orchestrator.job_model(job), orchestrator.job_buckets(job), exprs)
+            job.ttl, job.table_model, job.buckets, exprs)
     except Exception as e:  # noqa: BLE001
         db.add(JobEvent(job_id=job.id, event="migrate", detail=f"迁移失败，已回滚为原表: {e}"))
         db.commit()

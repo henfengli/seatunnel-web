@@ -141,6 +141,30 @@ class Job(Base):
     def tag_list(self) -> list[str]:
         return [t.strip() for t in self.tags.split(",") if t.strip()]
 
+    @property
+    def ttl(self) -> dict | None:
+        """从高级选项取 TTL 配置 {"num","unit","column"}；兼容老数据 options["ttl_days"]（按 DAY）。"""
+        opts = self.options
+        column = opts.get("ttl_column")
+        num = opts.get("ttl_num") or opts.get("ttl_days")
+        if num and column:
+            ttl = {"num": int(num), "unit": opts.get("ttl_unit", "DAY"), "column": column}
+            if opts.get("ttl_history_num"):
+                ttl["history_num"] = int(opts["ttl_history_num"])
+            return ttl
+        return None
+
+    @property
+    def buckets(self) -> int | None:
+        """分桶数覆盖，未配置返回 None（用环境默认值）。"""
+        v = self.options.get("buckets")
+        return int(v) if v else None
+
+    @property
+    def table_model(self) -> str:
+        """目标 Doris 表模型（默认 DUPLICATE；options["table_model"] 仅在 UNIQUE 时存储）。"""
+        return self.options.get("table_model", "DUPLICATE")
+
 
 class JobVersion(Base):
     """配置即代码：每次提交的 conf 快照全留档。"""
