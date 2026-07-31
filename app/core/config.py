@@ -23,13 +23,7 @@ class Settings:
         with open(ENV_YAML, encoding="utf-8") as f:
             self._raw: dict[str, Any] = yaml.safe_load(f) or {}
         self.environments: dict[str, dict[str, Any]] = self._raw.get("environments", {})
-        self.doris_naming: dict[str, str] = self._raw.get("doris_naming", {})
         self.watchdog: dict[str, Any] = self._raw.get("watchdog", {})
-
-    # ---- 命名规范 ----
-    @property
-    def default_doris_db(self) -> str:
-        return self.doris_naming.get("default_db", "seatunnel_sync")
 
 
 @lru_cache

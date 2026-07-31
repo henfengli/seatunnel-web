@@ -31,10 +31,6 @@ def to_dict(env: Environment) -> dict:
             "default_buckets": env.default_buckets,
             "replication_num": env.replication_num,
         },
-        "proto_site": {
-            "base_url": env.proto_site_url or "",
-            "auth_header": decrypt(env.proto_site_auth or ""),
-        },
     }
 
 
@@ -80,7 +76,6 @@ def seed_from_yaml(db: Session, settings) -> int:
         return 0
     for name, cfg in (settings.environments or {}).items():
         doris = cfg.get("doris", {}) or {}
-        proto = cfg.get("proto_site", {}) or {}
         masters = (cfg.get("seatunnel", {}) or {}).get("masters", []) or []
         db.add(Environment(
             name=name,
@@ -92,8 +87,6 @@ def seed_from_yaml(db: Session, settings) -> int:
             variant_enabled=bool(doris.get("variant_enabled", True)),
             default_buckets=int(doris.get("default_buckets", 10)),
             replication_num=int(doris.get("replication_num", 1)),
-            proto_site_url=proto.get("base_url") or None,
-            proto_site_auth=encrypt(proto["auth_header"]) if proto.get("auth_header") else None,
         ))
         count += 1
     db.commit()

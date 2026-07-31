@@ -77,23 +77,6 @@
     </div>
   </fieldset>
 
-  <fieldset>
-    <legend>Proto 站点（可选）</legend>
-    <div class="form-grid">
-      <div class="form-item">
-        <label for="f-proto_site_url">站点 URL</label>
-        <input type="text" id="f-proto_site_url" name="proto_site_url"
-               value="{{ val('proto_site_url') }}" placeholder="可留空">
-      </div>
-      <div class="form-item">
-        <label for="f-proto_site_auth">Auth Header</label>
-        <input type="password" id="f-proto_site_auth" name="proto_site_auth" value=""
-               placeholder="如 Bearer xxxx">
-        {% if is_edit %}<div class="hint">留空表示不修改</div>{% endif %}
-      </div>
-    </div>
-  </fieldset>
-
   {% if is_edit %}
   <fieldset>
     <legend>健康状态</legend>

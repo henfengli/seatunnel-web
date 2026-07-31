@@ -380,36 +380,6 @@ def check_compat(doris: dict, db_name: str, table: str, mapping: list[dict],
     return r
 
 
-def diff_columns(doris: dict, db_name: str, table: str, mapping: list[dict],
-                 ttl: dict | None = None, model: str = "DUPLICATE",
-                 buckets: int | None = None) -> tuple[bool, list[str]]:
-    """对比目标表现有列：不存在返回 (False, [建表 SQL])，存在返回 (True, [ADD COLUMN...])。
-
-    类型冲突不处理（由上层标警告）。ttl/model/buckets 仅在建新表时生效（已存在的表 Doris 不支持后改）。
-    """
-    variant_enabled = bool(doris.get("variant_enabled", True))
-    buckets = buckets or int(doris.get("default_buckets", 10))
-    replication_num = int(doris.get("replication_num", 1))
-    c = _connect(doris)
-    try:
-        with c.cursor() as cur:
-            existing = _existing_columns(cur, db_name, table)
-    finally:
-        c.close()
-    if existing is None:
-        return False, [build_create_table(db_name, table, mapping, variant_enabled, buckets,
-                                          replication_num, ttl, model)]
-    existing_lower = {n.lower() for n in existing}
-    key_set = set(key_columns(mapping)) if model == "AGGREGATE" else set()
-    stmts = [
-        f"ALTER TABLE `{db_name}`.`{table}` ADD COLUMN "
-        f"{_column_def(m, variant_enabled, model, m['doris_col'] in key_set)}"
-        for m in mapping
-        if m["doris_col"].lower() not in existing_lower
-    ]
-    return True, stmts
-
-
 def ensure_table(doris: dict, db_name: str, table: str, mapping: list[dict],
                  ttl: dict | None = None, model: str = "DUPLICATE",
                  buckets: int | None = None, dry_run: bool = False) -> dict:

@@ -62,10 +62,6 @@ def _env_form_apply(e: Environment, form) -> str | None:
     e.variant_enabled = (form.get("variant_enabled") or "true").strip() == "true"
     e.default_buckets = buckets
     e.replication_num = replication_num
-    e.proto_site_url = (form.get("proto_site_url") or "").strip() or None
-    auth = (form.get("proto_site_auth") or "").strip()
-    if auth:
-        e.proto_site_auth = encrypt(auth)
     return None
 
 
