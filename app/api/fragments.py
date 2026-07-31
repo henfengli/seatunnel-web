@@ -125,7 +125,7 @@ def _doris_dbs_response(request: Request, db: Session, env_name: str) -> HTMLRes
     try:
         dbs = doris_ddl.list_doris_dbs(envs.get_env(db, env_name))
     except Exception as e:  # noqa: BLE001 - 不可达时降级，不 500
-        error = str(e)[:200]
+        error = sanitize_error(str(e))[:200]
     return templates.TemplateResponse(request, "_doris_target.html", {
         "dbs": dbs, "error": error,
     })

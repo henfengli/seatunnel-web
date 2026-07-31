@@ -157,6 +157,7 @@ def stop(db: Session, job: Job, with_savepoint: bool = True) -> dict:
         st.post(db, job.env, "/stop-job",
                 json={"jobId": int(job.seatunnel_job_id), "isStopWithSavePoint": with_savepoint})
         job.status = "STOPPED"
+        job.status_detail = None  # 成功即清：过期错误不再挂详情页（与 submit/update 一致）
         _event(db, job, "stop", f"isStopWithSavePoint={with_savepoint}")
         db.add(job)
         db.commit()
