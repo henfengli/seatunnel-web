@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.ext.mutable import MutableDict, MutableList
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .core.db import Base, JsonDict
@@ -47,9 +48,7 @@ class Environment(Base):
     variant_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     default_buckets: Mapped[int] = mapped_column(Integer, default=10)
     replication_num: Mapped[int] = mapped_column(Integer, default=1)  # 单机 Doris 为 1；生产集群手动改 3
-    proto_site_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    proto_site_auth: Mapped[str | None] = mapped_column(Text, nullable=True)  # 加密存储
-    health: Mapped[dict | None] = mapped_column("health_json", JsonDict(dict), nullable=True)  # 最近连接测试结果（seatunnel/doris + checked_at）
+    health: Mapped[dict | None] = mapped_column("health_json", MutableDict.as_mutable(JsonDict(dict)), nullable=True)  # 最近连接测试结果（seatunnel/doris + checked_at）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -62,8 +61,8 @@ class Datasource(Base):
     env: Mapped[str] = mapped_column(String(32), index=True)
     name: Mapped[str] = mapped_column(String(128))
     type: Mapped[str] = mapped_column(String(16))          # kafka/mongodb/postgresql/doris
-    connection: Mapped[dict] = mapped_column("connection_json", JsonDict(dict), default=dict)  # 密码字段已加密
-    metadata_dict: Mapped[dict] = mapped_column("metadata_json", JsonDict(dict), nullable=True)  # 元数据缓存（topics/库表字段）
+    connection: Mapped[dict] = mapped_column("connection_json", MutableDict.as_mutable(JsonDict(dict)), default=dict)  # 密码字段已加密
+    metadata_dict: Mapped[dict] = mapped_column("metadata_json", MutableDict.as_mutable(JsonDict(dict)), nullable=True)  # 元数据缓存（topics/库表字段）
     metadata_status: Mapped[str] = mapped_column(String(16), default="pending")  # ok/expired/error/pending
     metadata_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -87,10 +86,10 @@ class ProtoPackage(Base):
     poll_interval_sec: Mapped[int] = mapped_column(Integer, default=3600)
     current_version: Mapped[str | None] = mapped_column(String(64), nullable=True)  # etag/版本号
     content: Mapped[str | None] = mapped_column(Text, nullable=True)                # 当前 .proto 原文
-    parsed: Mapped[dict] = mapped_column("parsed_json", JsonDict(dict), nullable=True)      # 解析产物（字段树）
+    parsed: Mapped[dict] = mapped_column("parsed_json", MutableDict.as_mutable(JsonDict(dict)), nullable=True)      # 解析产物（字段树）
     prev_content: Mapped[str | None] = mapped_column(Text, nullable=True)           # 上一版（用于回滚/diff）
-    prev_parsed: Mapped[dict] = mapped_column("prev_parsed_json", JsonDict(dict), nullable=True)
-    diff: Mapped[dict] = mapped_column("diff_json", JsonDict(dict), nullable=True)          # 最近一次的 diff
+    prev_parsed: Mapped[dict] = mapped_column("prev_parsed_json", MutableDict.as_mutable(JsonDict(dict)), nullable=True)
+    diff: Mapped[dict] = mapped_column("diff_json", MutableDict.as_mutable(JsonDict(dict)), nullable=True)          # 最近一次的 diff
     status: Mapped[str] = mapped_column(String(16), default="pending")  # current/updated/error/pending
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -121,12 +120,12 @@ class Job(Base):
     proto_package_id: Mapped[int | None] = mapped_column(ForeignKey("proto_packages.id"), nullable=True)
     message_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # [{source, st_type, doris_col, doris_type, nested, ...}]
-    field_mapping: Mapped[list] = mapped_column("field_mapping_json", JsonDict(list), nullable=True)
+    field_mapping: Mapped[list] = mapped_column("field_mapping_json", MutableList.as_mutable(JsonDict(list)), nullable=True)
     seatunnel_conf: Mapped[str | None] = mapped_column(Text, nullable=True)      # 当前渲染产物
     seatunnel_job_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
     status_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    options: Mapped[dict] = mapped_column("options_json", JsonDict(dict), default=dict)  # parallelism/checkpoint/批大小等
+    options: Mapped[dict] = mapped_column("options_json", MutableDict.as_mutable(JsonDict(dict)), default=dict)  # parallelism/checkpoint/批大小等
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -143,6 +142,30 @@ class Job(Base):
     def tag_list(self) -> list[str]:
         return [t.strip() for t in self.tags.split(",") if t.strip()]
 
+    @property
+    def ttl(self) -> dict | None:
+        """从高级选项取 TTL 配置 {"num","unit","column"}；兼容老数据 options["ttl_days"]（按 DAY）。"""
+        opts = self.options
+        column = opts.get("ttl_column")
+        num = opts.get("ttl_num") or opts.get("ttl_days")
+        if num and column:
+            ttl = {"num": int(num), "unit": opts.get("ttl_unit", "DAY"), "column": column}
+            if opts.get("ttl_history_num"):
+                ttl["history_num"] = int(opts["ttl_history_num"])
+            return ttl
+        return None
+
+    @property
+    def buckets(self) -> int | None:
+        """分桶数覆盖，未配置返回 None（用环境默认值）。"""
+        v = self.options.get("buckets")
+        return int(v) if v else None
+
+    @property
+    def table_model(self) -> str:
+        """目标 Doris 表模型（默认 DUPLICATE；options["table_model"] 仅在 UNIQUE 时存储）。"""
+        return self.options.get("table_model", "DUPLICATE")
+
 
 class JobVersion(Base):
     """配置即代码：每次提交的 conf 快照全留档。"""
@@ -153,7 +176,7 @@ class JobVersion(Base):
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"))
     version: Mapped[int] = mapped_column(Integer)
     conf: Mapped[str] = mapped_column(Text)
-    field_mapping: Mapped[list] = mapped_column("field_mapping_json", JsonDict(list), nullable=True)
+    field_mapping: Mapped[list] = mapped_column("field_mapping_json", MutableList.as_mutable(JsonDict(list)), nullable=True)
     ddl: Mapped[str | None] = mapped_column(Text, nullable=True)     # 本次执行的建表/加列语句
     proto_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     note: Mapped[str] = mapped_column(String(256), default="")
@@ -199,7 +222,7 @@ class BatchTask(Base):
     total: Mapped[int] = mapped_column(Integer, default=0)
     done: Mapped[int] = mapped_column(Integer, default=0)
     ok_count: Mapped[int] = mapped_column(Integer, default=0)
-    params: Mapped[dict] = mapped_column("params_json", JsonDict(dict), default=dict)  # options 批改字段/标签/是否重启
+    params: Mapped[dict] = mapped_column("params_json", MutableDict.as_mutable(JsonDict(dict)), default=dict)  # options 批改字段/标签/是否重启
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

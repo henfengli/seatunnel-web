@@ -1,6 +1,7 @@
 """作业管理：列表/新建/详情/编辑/提交编排/复制/删除/监控面板/目标表重建。"""
 from __future__ import annotations
 
+import copy
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Request
@@ -11,10 +12,9 @@ from starlette.concurrency import run_in_threadpool
 
 from ...core.db import get_db
 from ...models import DS_TYPES, JOB_STATUSES, Datasource, Job, JobEvent, ProtoPackage
-from ...services import (doris_ddl, envs, mapping_gen, monitor, orchestrator, render,
-                         seatunnel_client as st)
+from ...services import doris_ddl, envs, mapping_gen, monitor, orchestrator, render
 from ...templating import goto, templates
-from .common import (IDENT_RE, _NAME_RE, _form_dict, collect_options,
+from .common import (IDENT_RE, NAME_RE, form_dict, collect_options,
                      form_error, parse_mapping_form)
 
 router = APIRouter()
@@ -56,7 +56,7 @@ async def job_create(request: Request, db: Session = Depends(get_db)):
     def _err(msg: str):
         return form_error(request, "job_form.html", msg,
                           active="jobs", env_names=envs.env_names(db), ds_types=DS_TYPES,
-                          form=_form_dict(form), job=None, mapping=[], joptions={}, add_ts=True)
+                          form=form_dict(form), job=None, mapping=[], joptions={}, add_ts=True)
 
     name = (form.get("name") or "").strip()
     env = (form.get("env") or "").strip()
@@ -68,7 +68,7 @@ async def job_create(request: Request, db: Session = Depends(get_db)):
     # 业务线概念并入目标 Doris 库（容量面板按它聚合），不再让用户填写
     biz_line = doris_db
 
-    if not _NAME_RE.match(name):
+    if not NAME_RE.match(name):
         return _err("作业名称必填，仅限字母/数字/_.-")
     if env not in envs.env_names(db):
         return _err("请选择环境")
@@ -187,7 +187,7 @@ async def job_edit_save(request: Request, job_id: int, db: Session = Depends(get
 
     def _err(msg: str):
         return templates.TemplateResponse(request, "job_form.html",
-                                          _job_form_ctx(db, job, _form_dict(form), msg),
+                                          _job_form_ctx(db, job, form_dict(form), msg),
                                           status_code=400)
 
     tags = (form.get("tags") or "").strip()
@@ -318,7 +318,7 @@ async def job_copy(request: Request, job_id: int, db: Session = Depends(get_db))
     new_name = (form.get("new_name") or "").strip() or f"{job.name}_copy"
     if target_env not in envs.env_names(db):
         return goto(request, f"/jobs/{job_id}", "目标环境非法", ok=False)
-    if not _NAME_RE.match(new_name):
+    if not NAME_RE.match(new_name):
         return goto(request, f"/jobs/{job_id}", "新作业名称非法", ok=False)
     try:
         target_ds = db.get(Datasource, int(form.get("target_datasource_id") or 0))
@@ -333,7 +333,7 @@ async def job_copy(request: Request, job_id: int, db: Session = Depends(get_db))
         source_type=job.source_type, datasource_id=target_ds.id,
         source_ref=job.source_ref, doris_db=job.doris_db, doris_table=job.doris_table,
         proto_package_id=job.proto_package_id, message_name=job.message_name,
-        field_mapping=job.field_mapping, options=job.options,
+        field_mapping=copy.deepcopy(job.field_mapping), options=copy.deepcopy(job.options),
         status="DRAFT",
     )
     new_job.datasource = target_ds
@@ -401,13 +401,13 @@ def _recreate_ctx(db: Session, job: Job) -> dict:
     try:
         compat = doris_ddl.check_compat(
             envs.get_env(db, job.env)["doris"], job.doris_db, job.doris_table,
-            job.field_mapping, orchestrator.job_ttl(job), orchestrator.job_model(job), orchestrator.job_buckets(job))
+            job.field_mapping, job.ttl, job.table_model, job.buckets)
         ctx["compat"] = compat
         if compat["exists"]:
             variant = bool(envs.get_env(db, job.env)["doris"].get("variant_enabled", True))
             desired_keys = doris_ddl.key_columns(
                 job.field_mapping,
-                {"column": orchestrator.job_ttl(job)["column"]} if orchestrator.job_ttl(job) else None)
+                {"column": job.ttl["column"]} if job.ttl else None)
             plan, dropped = doris_ddl.build_migration_plan(
                 compat["old_cols"], job.field_mapping, variant, desired_keys)
             ctx["plan"] = plan
@@ -433,9 +433,7 @@ def job_recreate_page(request: Request, job_id: int, db: Session = Depends(get_d
 async def job_recreate_table(request: Request, job_id: int, db: Session = Depends(get_db)):
     """执行重建：mode=drop 删表重建（数据丢失）；mode=migrate 数据迁移重建。
 
-    migrate 编排：RUNNING 先 stop(savepoint) -> RENAME 为 tmp_ -> 建新表 -> INSERT SELECT
-    -> 行数核对 -> 删 tmp -> 按新配置 savepoint 恢复（kafka 位点保留，过程不丢数据）；
-    迁移失败自动回滚表名并尽量把作业拉回原运行状态。
+    migrate 的停启/迁移/回滚编排在 orchestrator.migrate_recreate（与 submit/stop/update 同级）。
     """
     job = db.get(Job, job_id)
     if not job:
@@ -453,7 +451,7 @@ async def job_recreate_table(request: Request, job_id: int, db: Session = Depend
         try:
             res = await run_in_threadpool(doris_ddl.recreate_table,
                 doris, job.doris_db, job.doris_table,
-                job.field_mapping, orchestrator.job_ttl(job), orchestrator.job_model(job), orchestrator.job_buckets(job))
+                job.field_mapping, job.ttl, job.table_model, job.buckets)
             db.add(JobEvent(job_id=job.id, event="ddl",
                             detail=f"删表重建 {job.doris_db}.{job.doris_table}:\n{res['ddl']}"))
             db.commit()
@@ -462,74 +460,12 @@ async def job_recreate_table(request: Request, job_id: int, db: Session = Depend
         except Exception as e:  # noqa: BLE001
             return goto(request, f"/jobs/{job.id}", f"删表重建失败: {e}", ok=False)
 
-    # ---- mode == "migrate" ----
-    was_running = job.status == "RUNNING"
-    if job.status == "UPDATING":
-        return goto(request, f"/jobs/{job.id}", "作业正在更新编排中，稍后再试", ok=False)
-
-    compat = await run_in_threadpool(
-        doris_ddl.check_compat, doris, job.doris_db, job.doris_table, job.field_mapping,
-        orchestrator.job_ttl(job), orchestrator.job_model(job), orchestrator.job_buckets(job))
-    if not compat["exists"]:
-        return goto(request, f"/jobs/{job.id}",
-                    "目标表不存在，无需迁移（直接提交作业即可自动建表）", ok=False)
-    variant = bool(doris.get("variant_enabled", True))
-    desired_keys = doris_ddl.key_columns(
-        job.field_mapping, {"column": orchestrator.job_ttl(job)["column"]} if orchestrator.job_ttl(job) else None)
-    plan, _dropped = doris_ddl.build_migration_plan(
-        compat["old_cols"], job.field_mapping, variant, desired_keys)
+    # ---- mode == "migrate"：编排在 orchestrator.migrate_recreate ----
     decisions = {k: v for k, v in form.items() if isinstance(v, str)}
-    exprs, errs = doris_ddl.build_select_exprs(plan, decisions)
-    if errs:
+    res = await run_in_threadpool(orchestrator.migrate_recreate, db, job, decisions)
+    if "exprs_errors" in res:  # 迁移决策有误：重渲染选择页
         return templates.TemplateResponse(request, "job_recreate.html", {
-            "active": "jobs", "job": job, "errors": errs,
+            "active": "jobs", "job": job, "errors": res["exprs_errors"],
             **(await run_in_threadpool(_recreate_ctx, db, job)),
         }, status_code=400)
-
-    # 1) 运行中先带 savepoint 停止（kafka 位点保留，恢复后不漏数）
-    old_st_id = job.seatunnel_job_id
-    if was_running:
-        stop_res = await run_in_threadpool(orchestrator.stop, db, job, with_savepoint=True)
-        if not stop_res.get("ok"):
-            return goto(request, f"/jobs/{job.id}",
-                        f"迁移前停止作业失败，未动表: {stop_res.get('error')}", ok=False)
-        if old_st_id:
-            await run_in_threadpool(st.wait_terminal, db, job.env, old_st_id)
-        db.add(JobEvent(job_id=job.id, event="migrate", detail="已带 savepoint 停止，开始数据迁移"))
-        db.commit()
-
-    async def _resume() -> str:
-        """迁移结束后恢复作业（仅原本在运行的；原本 STOPPED 的保持停止，由用户手动启动）。
-
-        失败不影响表结果，只提示。
-        """
-        if not was_running:
-            return ""
-        r = await run_in_threadpool(orchestrator.submit, db, job, start_with_savepoint=bool(old_st_id))
-        return "" if r.get("ok") else f"；恢复作业失败（表已就绪，请手动提交）: {r.get('error')}"
-
-    # 2) 迁移（内部失败自动回滚表名）
-    try:
-        mig = await run_in_threadpool(doris_ddl.migrate_table,
-            doris, job.doris_db, job.doris_table, job.field_mapping,
-            orchestrator.job_ttl(job), orchestrator.job_model(job), orchestrator.job_buckets(job), exprs)
-    except Exception as e:  # noqa: BLE001
-        db.add(JobEvent(job_id=job.id, event="migrate", detail=f"迁移失败，已回滚为原表: {e}"))
-        db.commit()
-        resume_note = await _resume()  # 表已回滚为原表，尽量把作业拉回原状态
-        return goto(request, f"/jobs/{job.id}",
-                    f"数据迁移失败（已回滚为原表，数据未丢失）: {e}{resume_note}", ok=False)
-
-    db.add(JobEvent(
-        job_id=job.id, event="migrate",
-        detail=(f"数据迁移完成 {job.doris_db}.{job.doris_table}: 旧表 {mig['old_rows']} 行 -> "
-                f"新表 {mig['new_rows']} 行"
-                + (f"（补建历史分区 {len(mig['partitions_added'])} 个）"
-                   if mig.get("partitions_added") else "")
-                + ("（tmp 表已删除）" if mig["tmp_dropped"]
-                   else f"（行数不一致，tmp 表 {mig['tmp']} 保留待人工核对）"))))
-    db.commit()
-    resume_note = await _resume()
-    note = "" if mig["tmp_dropped"] else f"；注意：tmp 表 {mig['tmp']} 未删除，请人工核对后清理"
-    return goto(request, f"/jobs/{job.id}",
-                f"数据迁移完成：{mig['old_rows']} -> {mig['new_rows']} 行{note}{resume_note}")
+    return goto(request, f"/jobs/{job.id}", res.get("msg") or res.get("error"), ok=res["ok"])

@@ -12,7 +12,7 @@ from app.models import BatchTask, Datasource, Environment, Job, ProtoPackage
 from app.services import doris_ddl, proto_center
 from app.services.field_mapping import append_timestamp_columns, build_mapping
 
-from .conftest import check
+from .helpers import check
 
 # ---------------------------------------------------------------- mock SeaTunnel（批量操作用）
 ST = {"status": "RUNNING", "stops": 0, "submits": 0}

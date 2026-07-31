@@ -4,7 +4,7 @@ from app.models import (BatchItem, BatchTask, Datasource, Environment,
                         Job, JobEvent, ProtoPackage)
 from app.services import proto_center
 
-from .conftest import check
+from .helpers import check
 
 PROTO = 'syntax = "proto3"; message Tick { int64 ts = 1; double px = 2; }'
 

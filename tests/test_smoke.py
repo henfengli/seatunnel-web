@@ -13,7 +13,7 @@ from app.services import doris_ddl, field_mapping, proto_center, render
 from app.services.metadata import mongo_d
 from app.templating import _mask_conf
 
-from .conftest import check
+from .helpers import check
 
 FLAT_PROTO = '''
 syntax = "proto3";
@@ -461,7 +461,7 @@ def test_security_regressions(db):
 
     check("URI 密码脱敏", "mongodb://u:****@h:27017/" in sanitize_error(
         "InvalidURI: mongodb://u:p%40ss@h:27017/?authSource=admin"))
-    uri = mongo_d._build_uri({"host": "mg", "port": 27017, "username": "u@x", "password": "p@ss/w"})
+    uri = mongo_d.build_uri({"host": "mg", "port": 27017, "username": "u@x", "password": "p@ss/w"})
     check("mongo URI 编码", "u%40x:p%40ss%2Fw@mg:27017" in uri, uri)
 
     conn, err = build_connection("postgresql", FormData(

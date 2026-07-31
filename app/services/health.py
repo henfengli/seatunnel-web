@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..core.crypto import decrypt_conn, sanitize_error
+from . import doris_ddl
 from ..models import Datasource, Environment
 
 
@@ -20,7 +21,7 @@ def _test_kafka(conn: dict) -> tuple[bool, str]:
 
     from kafka import KafkaAdminClient
 
-    from .metadata.kafka_d import _admin_kwargs
+    from .metadata.kafka_d import admin_kwargs
 
     # 先做 socket 级预检：任一 broker 可达即过（KafkaAdminClient 的 bootstrap 探测默认要等 30s）
     reachable = False
@@ -41,7 +42,7 @@ def _test_kafka(conn: dict) -> tuple[bool, str]:
     if not reachable:
         return False, first_err or "servers 为空"
 
-    admin = KafkaAdminClient(**_admin_kwargs(conn, request_timeout_ms=5000))
+    admin = KafkaAdminClient(**admin_kwargs(conn, request_timeout_ms=5000))
     try:
         return True, f"连接成功（{len(admin.list_topics())} 个 topic）"
     finally:
@@ -51,9 +52,9 @@ def _test_kafka(conn: dict) -> tuple[bool, str]:
 def _test_mongodb(conn: dict) -> tuple[bool, str]:
     from pymongo import MongoClient
 
-    from .metadata.mongo_d import _build_uri
+    from .metadata.mongo_d import build_uri
 
-    client = MongoClient(_build_uri(conn), serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
+    client = MongoClient(build_uri(conn), serverSelectionTimeoutMS=5000, connectTimeoutMS=5000)
     try:
         info = client.server_info()
         return True, f"连接成功（MongoDB {info.get('version', '?')}）"
@@ -78,17 +79,7 @@ def _test_postgresql(conn: dict) -> tuple[bool, str]:
 
 
 def _test_doris(conn: dict) -> tuple[bool, str]:
-    import pymysql
-
-    c = pymysql.connect(
-        host=conn.get("host") or conn.get("fenodes", "").split(",")[0].split(":")[0] or "localhost",
-        port=int(conn.get("port") or conn.get("query_port") or 9030),
-        user=conn.get("username") or conn.get("user") or "root",
-        password=conn.get("password", ""),
-        connect_timeout=5,
-        read_timeout=10,
-        charset="utf8mb4",
-    )
+    c = doris_ddl.connect(conn, read_timeout=10, autocommit=False)
     try:
         with c.cursor() as cur:
             cur.execute("SELECT 1")

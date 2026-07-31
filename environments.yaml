@@ -17,15 +17,6 @@ environments:
       default_buckets: 3
       # 单机 Doris（1 个 BE）为 1；生产集群（多 BE）改为 3
       replication_num: 1
-    # proto 站点（可选默认来源，ProtoPackage 也可单独配置 URL）
-    proto_site:
-      base_url: ""
-      auth_header: ""        # 例: "Bearer xxxx"
-
-# 目标 Doris 库默认值（作业向导第 4 步预填；目标表名默认 {source_type}_{源表名}，可改）
-doris_naming:
-  default_db: "seatunnel_sync"
-
 # 状态看护
 watchdog:
   status_poll_seconds: 15

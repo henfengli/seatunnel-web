@@ -8,20 +8,25 @@ import re
 import time
 
 
-def _connect(doris: dict):
-    """按环境 doris 配置建立 pymysql 连接（取第一个 fenode 的 host）。"""
+def connect(doris: dict, read_timeout: int = 30, autocommit: bool = True):
+    """全库唯一的 Doris 连接入口（pymysql，MySQL 协议，取第一个 fenode 的 host）。
+
+    兼容两种键名：环境 dict（fenodes/query_port/username，见 envs.to_dict "doris" 段）
+    与数据源 dict（host/port/user）。DDL/迁移用默认（read 30s + autocommit）；
+    连接探测/元数据发现传更短的 read_timeout 和 autocommit=False。
+    """
     import pymysql
 
-    host = doris["fenodes"].split(",")[0].split(":")[0]
+    host = doris.get("host") or doris.get("fenodes", "").split(",")[0].split(":")[0] or "localhost"
     return pymysql.connect(
         host=host,
-        port=int(doris.get("query_port", 9030)),
-        user=doris.get("username", "root"),
+        port=int(doris.get("port") or doris.get("query_port") or 9030),
+        user=doris.get("username") or doris.get("user") or "root",
         password=doris.get("password", ""),
         connect_timeout=5,
-        read_timeout=30,
+        read_timeout=read_timeout,
         charset="utf8mb4",
-        autocommit=True,
+        autocommit=autocommit,
     )
 
 
@@ -357,7 +362,7 @@ def check_compat(doris: dict, db_name: str, table: str, mapping: list[dict],
                  ttl: dict | None = None, model: str = "DUPLICATE",
                  buckets: int | None = None) -> dict:
     """读目标表现状（information_schema + SHOW CREATE TABLE）并做兼容性判定。"""
-    c = _connect(doris)
+    c = connect(doris)
     try:
         with c.cursor() as cur:
             cols = _existing_column_types(cur, db_name, table)
@@ -378,36 +383,6 @@ def check_compat(doris: dict, db_name: str, table: str, mapping: list[dict],
     r["show"] = show
     r["defaults"] = defaults
     return r
-
-
-def diff_columns(doris: dict, db_name: str, table: str, mapping: list[dict],
-                 ttl: dict | None = None, model: str = "DUPLICATE",
-                 buckets: int | None = None) -> tuple[bool, list[str]]:
-    """对比目标表现有列：不存在返回 (False, [建表 SQL])，存在返回 (True, [ADD COLUMN...])。
-
-    类型冲突不处理（由上层标警告）。ttl/model/buckets 仅在建新表时生效（已存在的表 Doris 不支持后改）。
-    """
-    variant_enabled = bool(doris.get("variant_enabled", True))
-    buckets = buckets or int(doris.get("default_buckets", 10))
-    replication_num = int(doris.get("replication_num", 1))
-    c = _connect(doris)
-    try:
-        with c.cursor() as cur:
-            existing = _existing_columns(cur, db_name, table)
-    finally:
-        c.close()
-    if existing is None:
-        return False, [build_create_table(db_name, table, mapping, variant_enabled, buckets,
-                                          replication_num, ttl, model)]
-    existing_lower = {n.lower() for n in existing}
-    key_set = set(key_columns(mapping)) if model == "AGGREGATE" else set()
-    stmts = [
-        f"ALTER TABLE `{db_name}`.`{table}` ADD COLUMN "
-        f"{_column_def(m, variant_enabled, model, m['doris_col'] in key_set)}"
-        for m in mapping
-        if m["doris_col"].lower() not in existing_lower
-    ]
-    return True, stmts
 
 
 def ensure_table(doris: dict, db_name: str, table: str, mapping: list[dict],
@@ -488,7 +463,7 @@ def ensure_table(doris: dict, db_name: str, table: str, mapping: list[dict],
                         f"ALTER TABLE `{db_name}`.`{table}` ADD PARTITION IF NOT EXISTS "
                         f"`{name}` VALUES [('{lo}'), ('{hi}'))")
             stmts.append(f'ALTER TABLE `{db_name}`.`{table}` SET ({props})')
-    c = _connect(doris)
+    c = connect(doris)
     try:
         result["notes"] = _exec_all(c, stmts, tolerate_noop=True)
     finally:
@@ -725,7 +700,7 @@ def migrate_table(doris: dict, db_name: str, table: str, mapping: list[dict],
     insert_sql = (f"INSERT INTO `{db_name}`.`{table}` ({cols})\n"
                   f"SELECT {', '.join(select_exprs)} FROM `{db_name}`.`{tmp}`")
     partitions_added: list[str] = []
-    c = _connect(doris)
+    c = connect(doris)
     try:
         with c.cursor() as cur:
             # 上次迁移崩溃可能留下 tmp 表：RENAME 必失败且易误操作，先明确拒绝并给处理指引
@@ -790,7 +765,7 @@ def recreate_table(doris: dict, db_name: str, table: str, mapping: list[dict],
         build_create_table(db_name, table, mapping, variant_enabled, buckets,
                            replication_num, ttl=ttl, model=model),
     ]
-    c = _connect(doris)
+    c = connect(doris)
     try:
         with c.cursor() as cur:
             for sql in stmts:
@@ -802,17 +777,17 @@ def recreate_table(doris: dict, db_name: str, table: str, mapping: list[dict],
 
 # ---------------------------------------------------------------- 作业向导实时查询
 
-_SYSTEM_DBS = ("information_schema", "mysql", "__internal_schema")
+SYSTEM_DBS = ("information_schema", "mysql", "__internal_schema")
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def list_doris_dbs(env_dict: dict) -> list[str]:
     """实时查环境 Doris 的库列表（SHOW DATABASES，过滤系统库）；env_dict 为 envs.to_dict 形状。"""
-    c = _connect(env_dict["doris"])
+    c = connect(env_dict["doris"])
     try:
         with c.cursor() as cur:
             cur.execute("SHOW DATABASES")
-            return sorted(r[0] for r in cur.fetchall() if r[0] not in _SYSTEM_DBS)
+            return sorted(r[0] for r in cur.fetchall() if r[0] not in SYSTEM_DBS)
     finally:
         c.close()
 
@@ -821,7 +796,7 @@ def list_doris_tables(env_dict: dict, db_name: str) -> list[str]:
     """实时查某库下的表列表；库名非法（防注入）直接返回空。"""
     if not _DB_NAME_RE.match(db_name or ""):
         return []
-    c = _connect(env_dict["doris"])
+    c = connect(env_dict["doris"])
     try:
         with c.cursor() as cur:
             cur.execute(f"SHOW TABLES FROM `{db_name}`")

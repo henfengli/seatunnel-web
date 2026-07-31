@@ -34,8 +34,3 @@ def db():
 def client():
     # 刻意不走 lifespan（with TestClient(...)）：测试不需要 watchdog 后台轮询
     return TestClient(app)
-
-
-def check(name, cond, extra=""):
-    """兼容原脚本的断言风格：失败时打印检查点名。"""
-    assert cond, f"{name} {extra}"

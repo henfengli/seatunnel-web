@@ -11,7 +11,7 @@ from app.models import (Datasource, Environment, Job, MetricSample,
                         ProtoPackage)
 from app.services import doris_ddl, monitor, orchestrator, proto_center
 
-from .conftest import check
+from .helpers import check
 
 STATE = {"job_id": None, "status": "RUNNING", "stops": 0, "submits": [], "conf_bodies": []}
 

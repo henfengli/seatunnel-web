@@ -1,4 +1,16 @@
-"""元数据自动发现入口：按数据源类型分发，结果落 Datasource 的 metadata_* 字段。"""
+"""元数据自动发现入口：按数据源类型分发，结果落 Datasource 的 metadata_* 字段。
+
+新源类型接入清单（如 MySQL 源 / ClickHouse sink），需要触达的点位：
+1. models.DS_TYPES                          类型枚举
+2. api/pages/datasource.py 表单/_DS_REQUIRED 连接字段
+3. health._TESTERS                          连接测试
+4. metadata/_DISCOVERERS（本文件）+ 新建 <type>_d.py 发现模块
+5. render._TEMPLATES                        SeaTunnel conf 模板
+6. field_mapping.build_mapping              类型映射 if-elif
+7. metadata/base.py 的 source_* 导航函数     库/表/列浏览 if-elif
+8. templating._ds_addr                      列表页地址展示
+9. 表单模板（datasource_form.html 等）       类型显隐联动
+"""
 from __future__ import annotations
 
 from datetime import datetime

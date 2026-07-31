@@ -18,6 +18,8 @@ class JsonDict(TypeDecorator):
     """TEXT 列存 JSON，Python 侧直接读写 dict/list，免去各模型手写 *_json + property 样板。
 
     数据库列名保持原 *_json 不变（兼容已有库）；NULL 读出时返回 default()。
+    列声明需配 MutableDict/MutableList.as_mutable（见 models.py）——顶层键/元素原地改
+    才会被跟踪落库；嵌套层级的变更仍须整体重新赋值。
     """
 
     impl = Text

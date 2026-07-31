@@ -9,10 +9,10 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from app.models import Datasource, Environment, Job
+from app.models import Datasource, Environment, Job, JobEvent
 from app.services import doris_ddl, orchestrator
 
-from .conftest import check
+from .helpers import check
 
 
 
@@ -274,7 +274,7 @@ def test_migration_plan():
 def test_migrate_table(monkeypatch):
     # 5. migrate_table 全流程（FakeConn）
     fc = FakeConn(counts=(100, 100))
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc)
     mig = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4,
                                   ["`id`", "`ts`", "`v`"])
     check("迁移 RENAME->CREATE->INSERT", "ALTER TABLE `db1`.`t` RENAME `tmp_t`" in fc.execs
@@ -285,7 +285,7 @@ def test_migrate_table(monkeypatch):
     # TTL 迁移：关动态分区开关 -> 按数据补建历史分区 -> 开开关 -> INSERT
     fc_ttl = FakeConn(counts=(100, 100),
                       trunc_rows=[(_dt(2026, 7, 18),), (_dt(2026, 7, 27),)])
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_ttl)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc_ttl)
     mig_ttl = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4,
                                       ["`id`", "`ts`", "`v`"])
     ex = fc_ttl.execs
@@ -302,7 +302,7 @@ def test_migrate_table(monkeypatch):
           str(mig_ttl["partitions_added"]))
 
     fc2 = FakeConn(counts=(100, 90))
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc2)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc2)
     mig2 = doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4,
                                    ["`id`", "`ts`", "`v`"])
     check("行数不一致保留 tmp", not mig2["tmp_dropped"]
@@ -321,7 +321,7 @@ def test_migrate_table(monkeypatch):
             return cur
 
     fc3 = FailInsertConn(counts=(0, 0))
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc3)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc3)
     try:
         doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4, ["`id`"])
         check("迁移失败应抛异常", False)
@@ -345,7 +345,7 @@ def test_migrate_table(monkeypatch):
             return cur
 
     fc_tmp = TmpLeftoverConn(counts=(0, 0))
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_tmp)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc_tmp)
     try:
         doris_ddl.migrate_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4, ["`id`"])
         check("tmp 残留应拒绝", False)
@@ -359,7 +359,7 @@ def test_ensure_table(monkeypatch):
     # 6. ensure_table：recreate 拒绝 / online 演进
     fc4 = FakeConn(col_rows=[("id", "bigint"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
                    show_create=SHOW_CREATE_UNIQUE)
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc4)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc4)
     r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "DUPLICATE", 4)
     check("ensure recreate 拒绝", r.get("needs_recreate") and any("表模型" in x for x in r["reasons"]))
     ddl_execs = [s for s in fc4.execs
@@ -368,7 +368,7 @@ def test_ensure_table(monkeypatch):
 
     fc5 = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
                    show_create=SHOW_CREATE_UNIQUE.replace('"true"', '"false"'))
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc5)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc5)
     r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4)
     alters = [s for s in fc5.execs if s.startswith("ALTER TABLE")]
     check("online MODIFY COLUMN", any("MODIFY COLUMN `id` BIGINT KEY" in s for s in alters),
@@ -380,7 +380,7 @@ def test_ensure_table(monkeypatch):
     fc5d = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
                     show_create=SHOW_CREATE_UNIQUE)
     fc5d.default_rows = [("v", "'abc'")]
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc5d)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc5d)
     r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4)
     check("MODIFY 重述 DEFAULT",
           any("MODIFY COLUMN `v` STRING DEFAULT 'abc'" in s for s in fc5d.execs),
@@ -389,7 +389,7 @@ def test_ensure_table(monkeypatch):
     # ALTER 时同步建历史分区：关开关 -> 按当前时间往前建 N 个 -> 恢复配置（不等调度器）
     fc_hn = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
                      show_create=SHOW_CREATE_UNIQUE.replace('"true"', '"false"'))
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_hn)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc_hn)
     TTL_HN = {"num": 7, "unit": "HOUR", "column": "ts", "history_num": 3}
     r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL_HN, "UNIQUE", 4)
     execs = fc_hn.execs
@@ -417,7 +417,7 @@ def test_ensure_table(monkeypatch):
         col_rows=[("id", "bigint"), ("k2", "int"), ("cnt", "int")],
         show_create="CREATE TABLE `t` (\n `id` BIGINT,\n `k2` INT,\n `cnt` INT SUM\n)\n"
                     "AGGREGATE KEY(`id`, `k2`)\nDISTRIBUTED BY HASH(`id`) BUCKETS 3")
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_agg)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc_agg)
     r = doris_ddl.ensure_table(DORIS, "db1", "t", AGG_MAP, None, "AGGREGATE", 3)
     alters = [s for s in fc_agg.execs if "MODIFY COLUMN" in s]
     check("AGG 非分桶 key 列 MODIFY 带 KEY", any("MODIFY COLUMN `k2` BIGINT KEY" in s for s in alters),
@@ -430,14 +430,14 @@ def test_ensure_table(monkeypatch):
         col_rows=[("id", "int"), ("k2", "bigint"), ("cnt", "int")],
         show_create="CREATE TABLE `t` (\n `id` INT,\n `k2` BIGINT,\n `cnt` INT SUM\n)\n"
                     "AGGREGATE KEY(`id`, `k2`)\nDISTRIBUTED BY HASH(`id`) BUCKETS 3")
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc_bucket)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc_bucket)
     r = doris_ddl.ensure_table(DORIS, "db1", "t", AGG_MAP, None, "AGGREGATE", 3)
     check("分桶列类型变化判 recreate", r.get("needs_recreate")
           and any("分桶列" in x for x in r["reasons"]), str(r.get("reasons")))
 
     fc6 = FakeConn(col_rows=[("id", "int"), ("ts", "datetimev2(3)"), ("v", "varchar(100)")],
                    show_create=SHOW_CREATE_UNIQUE)
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc6)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc6)
     r = doris_ddl.ensure_table(DORIS, "db1", "t", MAPPING, TTL, "UNIQUE", 4, dry_run=True)
     check("dry_run 不执行", not r.get("needs_recreate")
           and not any(s.startswith("ALTER TABLE") for s in fc6.execs), str(fc6.execs))
@@ -466,11 +466,11 @@ def test_busy_retry(monkeypatch):
 
     monkeypatch.setattr(doris_ddl.time, "sleep", lambda s: None)
     fc8 = BusyConn(2)
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc8)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc8)
     doris_ddl._exec_all(fc8, ['ALTER TABLE `db1`.`t` SET ("a" = "b")'], tolerate_noop=True)
     check("SCHEMA_CHANGE 忙重试后成功", len(fc8.execs) == 3, str(len(fc8.execs)))
     fc9 = BusyConn(999)
-    monkeypatch.setattr(doris_ddl, "_connect", lambda d: fc9)
+    monkeypatch.setattr(doris_ddl, "connect", lambda d: fc9)
     try:
         doris_ddl._exec_all(fc9, ['ALTER TABLE `db1`.`t` SET ("a" = "b")'], max_wait_sec=4)
         check("忙超时应抛异常", False)
@@ -478,6 +478,67 @@ def test_busy_retry(monkeypatch):
         check("忙超时带指引", "SHOW ALTER TABLE COLUMN" in str(e), str(e)[:80])
 
 
+
+
+# ---------------------------------------------------------------- 迁移重建编排端到端（orchestrator.migrate_recreate）
+def _mk_migrate_job(db, name="mg_e2e") -> Job:
+    """造一个 DRAFT 作业（env=demo，Doris 连接由 monkeypatch 替换为 FakeConn）。"""
+    env = db.query(Environment).filter_by(name="demo").first()
+    if env is None:
+        env = Environment(name="demo", doris_fenodes="fake:8030", doris_query_port=9030,
+                          doris_username="root", doris_password="", variant_enabled=True,
+                          seatunnel_masters="http://127.0.0.1:18082")
+        db.add(env)
+    ds = db.query(Datasource).filter_by(env="demo", name="mg").first()
+    if ds is None:
+        ds = Datasource(env="demo", name="mg", type="kafka", connection={"servers": "k:9092"})
+        db.add(ds)
+    db.commit()
+    job = Job(name=name, env="demo", biz_line="db1", source_type="kafka",
+              datasource_id=ds.id, source_ref="ticks", doris_db="db1", doris_table="t",
+              field_mapping=MAPPING, options={}, status="DRAFT")
+    db.add(job)
+    db.commit()
+    return job
+
+
+def test_migrate_recreate_e2e(db, monkeypatch):
+    """编排端到端：compat -> 迁移 -> 事件留档（DRAFT 作业不动 SeaTunnel）。"""
+    job = _mk_migrate_job(db)
+    fc = FakeConn(col_rows=[("id", "bigint"), ("ts", "datetimev2(3)"), ("v", "varchar(512)")],
+                  show_create=SHOW_CREATE_UNIQUE, counts=(100, 100))
+    monkeypatch.setattr(doris_ddl, "connect", lambda d, **kw: fc)
+    res = orchestrator.migrate_recreate(db, job, {})
+    check("迁移编排成功", res["ok"], str(res))
+    check("消息带行数", "100 -> 100 行" in res["msg"], res.get("msg", ""))
+    events = [e.detail for e in db.query(JobEvent).filter_by(job_id=job.id, event="migrate")]
+    check("迁移事件留档", any("数据迁移完成" in d for d in events), str(events))
+    check("DRAFT 作业状态不动", job.status == "DRAFT", job.status)
+
+
+def test_migrate_recreate_rollback(db, monkeypatch):
+    """迁移中途失败：表回滚 + 事件留档 + ok=False（DRAFT 作业无恢复动作）。"""
+    job = _mk_migrate_job(db, name="mg_e2e_fail")
+
+    class FailCursor(FakeCursor):
+        def execute(self, sql, args=None):
+            if sql.startswith("INSERT INTO"):  # 建表后灌数时失败，触发回滚
+                self.conn.execs.append(sql)
+                raise RuntimeError("insert burst")
+            return super().execute(sql, args)
+
+    class FailConn(FakeConn):
+        def cursor(self):
+            return FailCursor(self)
+
+    fc = FailConn(col_rows=[("id", "bigint"), ("ts", "datetimev2(3)"), ("v", "varchar(512)")],
+                  show_create=SHOW_CREATE_UNIQUE, counts=(100, 100))
+    monkeypatch.setattr(doris_ddl, "connect", lambda d, **kw: fc)
+    res = orchestrator.migrate_recreate(db, job, {})
+    check("失败返回 ok=False", not res["ok"], str(res))
+    check("错误说明已回滚", "已回滚为原表" in res["error"], res.get("error", ""))
+    events = [e.detail for e in db.query(JobEvent).filter_by(job_id=job.id, event="migrate")]
+    check("失败事件留档", any("已回滚为原表" in d for d in events), str(events))
 
 
 # ---------------------------------------------------------------- 提交/更新预检（mock SeaTunnel）
