@@ -11,8 +11,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ...core.db import get_db
 from ...models import DS_TYPES, JOB_STATUSES, Datasource, Job, JobEvent, ProtoPackage
-from ...services import (doris_ddl, envs, mapping_gen, monitor, orchestrator, render,
-                         seatunnel_client as st)
+from ...services import doris_ddl, envs, mapping_gen, monitor, orchestrator, render
 from ...templating import goto, templates
 from .common import (IDENT_RE, NAME_RE, form_dict, collect_options,
                      form_error, parse_mapping_form)
@@ -433,9 +432,7 @@ def job_recreate_page(request: Request, job_id: int, db: Session = Depends(get_d
 async def job_recreate_table(request: Request, job_id: int, db: Session = Depends(get_db)):
     """执行重建：mode=drop 删表重建（数据丢失）；mode=migrate 数据迁移重建。
 
-    migrate 编排：RUNNING 先 stop(savepoint) -> RENAME 为 tmp_ -> 建新表 -> INSERT SELECT
-    -> 行数核对 -> 删 tmp -> 按新配置 savepoint 恢复（kafka 位点保留，过程不丢数据）；
-    迁移失败自动回滚表名并尽量把作业拉回原运行状态。
+    migrate 的停启/迁移/回滚编排在 orchestrator.migrate_recreate（与 submit/stop/update 同级）。
     """
     job = db.get(Job, job_id)
     if not job:
@@ -462,74 +459,12 @@ async def job_recreate_table(request: Request, job_id: int, db: Session = Depend
         except Exception as e:  # noqa: BLE001
             return goto(request, f"/jobs/{job.id}", f"删表重建失败: {e}", ok=False)
 
-    # ---- mode == "migrate" ----
-    was_running = job.status == "RUNNING"
-    if job.status == "UPDATING":
-        return goto(request, f"/jobs/{job.id}", "作业正在更新编排中，稍后再试", ok=False)
-
-    compat = await run_in_threadpool(
-        doris_ddl.check_compat, doris, job.doris_db, job.doris_table, job.field_mapping,
-        job.ttl, job.table_model, job.buckets)
-    if not compat["exists"]:
-        return goto(request, f"/jobs/{job.id}",
-                    "目标表不存在，无需迁移（直接提交作业即可自动建表）", ok=False)
-    variant = bool(doris.get("variant_enabled", True))
-    desired_keys = doris_ddl.key_columns(
-        job.field_mapping, {"column": job.ttl["column"]} if job.ttl else None)
-    plan, _dropped = doris_ddl.build_migration_plan(
-        compat["old_cols"], job.field_mapping, variant, desired_keys)
+    # ---- mode == "migrate"：编排在 orchestrator.migrate_recreate ----
     decisions = {k: v for k, v in form.items() if isinstance(v, str)}
-    exprs, errs = doris_ddl.build_select_exprs(plan, decisions)
-    if errs:
+    res = await run_in_threadpool(orchestrator.migrate_recreate, db, job, decisions)
+    if "exprs_errors" in res:  # 迁移决策有误：重渲染选择页
         return templates.TemplateResponse(request, "job_recreate.html", {
-            "active": "jobs", "job": job, "errors": errs,
+            "active": "jobs", "job": job, "errors": res["exprs_errors"],
             **(await run_in_threadpool(_recreate_ctx, db, job)),
         }, status_code=400)
-
-    # 1) 运行中先带 savepoint 停止（kafka 位点保留，恢复后不漏数）
-    old_st_id = job.seatunnel_job_id
-    if was_running:
-        stop_res = await run_in_threadpool(orchestrator.stop, db, job, with_savepoint=True)
-        if not stop_res.get("ok"):
-            return goto(request, f"/jobs/{job.id}",
-                        f"迁移前停止作业失败，未动表: {stop_res.get('error')}", ok=False)
-        if old_st_id:
-            await run_in_threadpool(st.wait_terminal, db, job.env, old_st_id)
-        db.add(JobEvent(job_id=job.id, event="migrate", detail="已带 savepoint 停止，开始数据迁移"))
-        db.commit()
-
-    async def _resume() -> str:
-        """迁移结束后恢复作业（仅原本在运行的；原本 STOPPED 的保持停止，由用户手动启动）。
-
-        失败不影响表结果，只提示。
-        """
-        if not was_running:
-            return ""
-        r = await run_in_threadpool(orchestrator.submit, db, job, start_with_savepoint=bool(old_st_id))
-        return "" if r.get("ok") else f"；恢复作业失败（表已就绪，请手动提交）: {r.get('error')}"
-
-    # 2) 迁移（内部失败自动回滚表名）
-    try:
-        mig = await run_in_threadpool(doris_ddl.migrate_table,
-            doris, job.doris_db, job.doris_table, job.field_mapping,
-            job.ttl, job.table_model, job.buckets, exprs)
-    except Exception as e:  # noqa: BLE001
-        db.add(JobEvent(job_id=job.id, event="migrate", detail=f"迁移失败，已回滚为原表: {e}"))
-        db.commit()
-        resume_note = await _resume()  # 表已回滚为原表，尽量把作业拉回原状态
-        return goto(request, f"/jobs/{job.id}",
-                    f"数据迁移失败（已回滚为原表，数据未丢失）: {e}{resume_note}", ok=False)
-
-    db.add(JobEvent(
-        job_id=job.id, event="migrate",
-        detail=(f"数据迁移完成 {job.doris_db}.{job.doris_table}: 旧表 {mig['old_rows']} 行 -> "
-                f"新表 {mig['new_rows']} 行"
-                + (f"（补建历史分区 {len(mig['partitions_added'])} 个）"
-                   if mig.get("partitions_added") else "")
-                + ("（tmp 表已删除）" if mig["tmp_dropped"]
-                   else f"（行数不一致，tmp 表 {mig['tmp']} 保留待人工核对）"))))
-    db.commit()
-    resume_note = await _resume()
-    note = "" if mig["tmp_dropped"] else f"；注意：tmp 表 {mig['tmp']} 未删除，请人工核对后清理"
-    return goto(request, f"/jobs/{job.id}",
-                f"数据迁移完成：{mig['old_rows']} -> {mig['new_rows']} 行{note}{resume_note}")
+    return goto(request, f"/jobs/{job.id}", res.get("msg") or res.get("error"), ok=res["ok"])

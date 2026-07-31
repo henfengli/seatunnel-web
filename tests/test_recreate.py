@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from app.models import Datasource, Environment, Job
+from app.models import Datasource, Environment, Job, JobEvent
 from app.services import doris_ddl, orchestrator
 
 from .conftest import check
@@ -478,6 +478,67 @@ def test_busy_retry(monkeypatch):
         check("忙超时带指引", "SHOW ALTER TABLE COLUMN" in str(e), str(e)[:80])
 
 
+
+
+# ---------------------------------------------------------------- 迁移重建编排端到端（orchestrator.migrate_recreate）
+def _mk_migrate_job(db, name="mg_e2e") -> Job:
+    """造一个 DRAFT 作业（env=demo，Doris 连接由 monkeypatch 替换为 FakeConn）。"""
+    env = db.query(Environment).filter_by(name="demo").first()
+    if env is None:
+        env = Environment(name="demo", doris_fenodes="fake:8030", doris_query_port=9030,
+                          doris_username="root", doris_password="", variant_enabled=True,
+                          seatunnel_masters="http://127.0.0.1:18082")
+        db.add(env)
+    ds = db.query(Datasource).filter_by(env="demo", name="mg").first()
+    if ds is None:
+        ds = Datasource(env="demo", name="mg", type="kafka", connection={"servers": "k:9092"})
+        db.add(ds)
+    db.commit()
+    job = Job(name=name, env="demo", biz_line="db1", source_type="kafka",
+              datasource_id=ds.id, source_ref="ticks", doris_db="db1", doris_table="t",
+              field_mapping=MAPPING, options={}, status="DRAFT")
+    db.add(job)
+    db.commit()
+    return job
+
+
+def test_migrate_recreate_e2e(db, monkeypatch):
+    """编排端到端：compat -> 迁移 -> 事件留档（DRAFT 作业不动 SeaTunnel）。"""
+    job = _mk_migrate_job(db)
+    fc = FakeConn(col_rows=[("id", "bigint"), ("ts", "datetimev2(3)"), ("v", "varchar(512)")],
+                  show_create=SHOW_CREATE_UNIQUE, counts=(100, 100))
+    monkeypatch.setattr(doris_ddl, "connect", lambda d, **kw: fc)
+    res = orchestrator.migrate_recreate(db, job, {})
+    check("迁移编排成功", res["ok"], str(res))
+    check("消息带行数", "100 -> 100 行" in res["msg"], res.get("msg", ""))
+    events = [e.detail for e in db.query(JobEvent).filter_by(job_id=job.id, event="migrate")]
+    check("迁移事件留档", any("数据迁移完成" in d for d in events), str(events))
+    check("DRAFT 作业状态不动", job.status == "DRAFT", job.status)
+
+
+def test_migrate_recreate_rollback(db, monkeypatch):
+    """迁移中途失败：表回滚 + 事件留档 + ok=False（DRAFT 作业无恢复动作）。"""
+    job = _mk_migrate_job(db, name="mg_e2e_fail")
+
+    class FailCursor(FakeCursor):
+        def execute(self, sql, args=None):
+            if sql.startswith("INSERT INTO"):  # 建表后灌数时失败，触发回滚
+                self.conn.execs.append(sql)
+                raise RuntimeError("insert burst")
+            return super().execute(sql, args)
+
+    class FailConn(FakeConn):
+        def cursor(self):
+            return FailCursor(self)
+
+    fc = FailConn(col_rows=[("id", "bigint"), ("ts", "datetimev2(3)"), ("v", "varchar(512)")],
+                  show_create=SHOW_CREATE_UNIQUE, counts=(100, 100))
+    monkeypatch.setattr(doris_ddl, "connect", lambda d, **kw: fc)
+    res = orchestrator.migrate_recreate(db, job, {})
+    check("失败返回 ok=False", not res["ok"], str(res))
+    check("错误说明已回滚", "已回滚为原表" in res["error"], res.get("error", ""))
+    events = [e.detail for e in db.query(JobEvent).filter_by(job_id=job.id, event="migrate")]
+    check("失败事件留档", any("已回滚为原表" in d for d in events), str(events))
 
 
 # ---------------------------------------------------------------- 提交/更新预检（mock SeaTunnel）

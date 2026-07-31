@@ -341,6 +341,73 @@ def update_and_restart(db: Session, job: Job, note: str = "") -> dict:
         return {"ok": False, "rolled_back": False, "error": str(e)}
 
 
+def migrate_recreate(db: Session, job: Job, decisions: dict) -> dict:
+    """数据迁移重建编排：compat 检查 -> 停作业(savepoint) -> 等终态 -> RENAME 迁移 -> 恢复。
+
+    decisions 为迁移决策表单（列冲突的取舍，见 doris_ddl.build_select_exprs）。
+    决策有误返回 {"ok": False, "exprs_errors": [...]} 由路由重渲染选择页；
+    迁移失败自动回滚表名（数据不丢），并尽量把作业拉回原运行状态。
+    原本 STOPPED 的作业迁移后保持停止，由用户手动启动。
+    """
+    if job.status == "UPDATING":
+        return {"ok": False, "error": "作业正在更新编排中，稍后再试"}
+    doris = envs.get_env(db, job.env)["doris"]
+    compat = doris_ddl.check_compat(doris, job.doris_db, job.doris_table, job.field_mapping,
+                                    job.ttl, job.table_model, job.buckets)
+    if not compat["exists"]:
+        return {"ok": False, "error": "目标表不存在，无需迁移（直接提交作业即可自动建表）"}
+    variant = bool(doris.get("variant_enabled", True))
+    desired_keys = doris_ddl.key_columns(
+        job.field_mapping, {"column": job.ttl["column"]} if job.ttl else None)
+    plan, _dropped = doris_ddl.build_migration_plan(
+        compat["old_cols"], job.field_mapping, variant, desired_keys)
+    exprs, errs = doris_ddl.build_select_exprs(plan, decisions)
+    if errs:
+        return {"ok": False, "exprs_errors": errs}
+
+    # 1) 运行中先带 savepoint 停止（kafka 位点保留，恢复后不漏数）
+    was_running = job.status == "RUNNING"
+    old_st_id = job.seatunnel_job_id
+    if was_running:
+        stop_res = stop(db, job, with_savepoint=True)
+        if not stop_res.get("ok"):
+            return {"ok": False, "error": f"迁移前停止作业失败，未动表: {stop_res.get('error')}"}
+        if old_st_id:
+            st.wait_terminal(db, job.env, old_st_id)
+        _event(db, job, "migrate", "已带 savepoint 停止，开始数据迁移")
+        db.commit()
+
+    def _resume() -> str:
+        """恢复原本在运行的作业；失败不影响表结果，只提示。"""
+        if not was_running:
+            return ""
+        r = submit(db, job, start_with_savepoint=bool(old_st_id))
+        return "" if r.get("ok") else f"；恢复作业失败（表已就绪，请手动提交）: {r.get('error')}"
+
+    # 2) 迁移（内部失败自动回滚表名）
+    try:
+        mig = doris_ddl.migrate_table(doris, job.doris_db, job.doris_table, job.field_mapping,
+                                      job.ttl, job.table_model, job.buckets, exprs)
+    except Exception as e:  # noqa: BLE001
+        _event(db, job, "migrate", f"迁移失败，已回滚为原表: {e}")
+        db.commit()
+        resume_note = _resume()  # 表已回滚为原表，尽量把作业拉回原状态
+        return {"ok": False, "error": f"数据迁移失败（已回滚为原表，数据未丢失）: {e}{resume_note}"}
+
+    _event(db, job, "migrate",
+           f"数据迁移完成 {job.doris_db}.{job.doris_table}: 旧表 {mig['old_rows']} 行 -> "
+           f"新表 {mig['new_rows']} 行"
+           + (f"（补建历史分区 {len(mig['partitions_added'])} 个）"
+              if mig.get("partitions_added") else "")
+           + ("（tmp 表已删除）" if mig["tmp_dropped"]
+              else f"（行数不一致，tmp 表 {mig['tmp']} 保留待人工核对）"))
+    db.commit()
+    resume_note = _resume()
+    note = "" if mig["tmp_dropped"] else f"；注意：tmp 表 {mig['tmp']} 未删除，请人工核对后清理"
+    return {"ok": True,
+            "msg": f"数据迁移完成：{mig['old_rows']} -> {mig['new_rows']} 行{note}{resume_note}"}
+
+
 def refresh_status(db: Session, job: Job) -> Job:
     """同步 SeaTunnel 侧作业状态；读不到信息不改动，状态变化记事件。
 
