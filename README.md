@@ -100,6 +100,7 @@ app/
 ├── models.py
 └── main.py
 tests/                # pytest 测试（见上）
+docs/设计和架构/       # 代码结构设计与开发规范（新人入口）+ 评审存档
 environments.yaml     # 全局配置（命名规范/看护间隔/告警webhook；环境段仅为首启种子）
 data/                 # 运行数据（SQLite / 密钥，首次启动自动生成）
 ```

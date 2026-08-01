@@ -40,7 +40,7 @@ def _sweep_stuck_batches(db) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动：建表 + 环境种子（表为空时从 YAML 导入一次）+ 中断批量任务收敛 + 后台看护
+    # 启动：建表 + 环境种子（.env_seeded 标记保证 YAML 只导入一次）+ 中断批量任务收敛 + 后台看护
     init_db()
     with SessionLocal() as db:
         envs.seed_from_yaml(db, get_settings())
