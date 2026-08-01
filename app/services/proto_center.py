@@ -10,7 +10,7 @@ from datetime import datetime
 import httpx
 from sqlalchemy.orm import Session
 
-from ..core.crypto import decrypt
+from ..core.crypto import decrypt, sanitize_error
 from ..models import ProtoPackage
 
 # protoc 字段类型编号 -> proto 类型名（与 google.protobuf.FieldDescriptorProto.Type 对应）
@@ -191,7 +191,7 @@ def poll_package(db: Session, pkg: ProtoPackage) -> ProtoPackage:
         _apply_content(pkg, content, version, changed_status="updated")
     except Exception as e:  # noqa: BLE001 - 轮询失败只落库不抛出
         pkg.status = "error"
-        pkg.error = str(e)[:2000]
+        pkg.error = sanitize_error(str(e))[:2000]
         pkg.last_polled_at = datetime.now()
     db.add(pkg)
     db.commit()
@@ -205,7 +205,7 @@ def update_content(db: Session, pkg: ProtoPackage, content: str) -> ProtoPackage
         _apply_content(pkg, content, version, changed_status="current")
     except Exception as e:  # noqa: BLE001
         pkg.status = "error"
-        pkg.error = str(e)[:2000]
+        pkg.error = sanitize_error(str(e))[:2000]
         pkg.last_polled_at = datetime.now()
     db.add(pkg)
     db.commit()

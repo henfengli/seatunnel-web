@@ -156,8 +156,12 @@ def test_orchestrator(db):
     check("被拦截后仍为 DRAFT", job2.status == "DRAFT", job2.status)
 
     # 4. stop
+    job.status_detail = "上次失败残留"  # N2 回归：stop 成功应清掉过期错误详情
+    db.add(job)
+    db.commit()
     r = orchestrator.stop(db, job, with_savepoint=True)
     check("stop ok", r.get("ok") is True and job.status == "STOPPED", f"{r}/{job.status}")
+    check("stop 成功清 status_detail", job.status_detail is None, str(job.status_detail))
 
     # 4b. 第一个作业停止后，第二个可以正常提交
     r = orchestrator.submit(db, job2)

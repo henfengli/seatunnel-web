@@ -66,6 +66,14 @@ def _parse_size(v) -> int:
 
 # ---------------------------------------------------------------- SeaTunnel REST
 
+def _fetch_log_text(env_dict: dict, link: str) -> str:
+    """按日志链接取全文：logLink 是绝对 URL 直接 GET，否则按文件名走 master REST。
+    已知限制：整文读入内存再截尾（SeaTunnel 主日志可达上百 MB，内网+日志滚动场景可接受）。"""
+    if link.startswith("http"):
+        return httpx.get(link, timeout=10).text
+    return _st_get(env_dict, f"/logs/{link}", raw=True, timeout=15)
+
+
 def _st_get(env_dict: dict, path: str, raw: bool = False, timeout: int = _TIMEOUT):
     """SeaTunnel GET 的本地别名（统一走 seatunnel_client，带 monitor 默认超时）。"""
     return st.request_env(env_dict, "GET", path, raw=raw, timeout=timeout)
@@ -409,8 +417,7 @@ def engine_logs(db: Session, env_name: str, tail: int = 500) -> dict:
             return result
         link = engine.get("logLink") or engine.get("logName") or ""
         result["link"] = link
-        text = (httpx.get(link, timeout=10).text if link.startswith("http")
-                else _st_get(env_dict, f"/logs/{link}", raw=True, timeout=15))
+        text = _fetch_log_text(env_dict, link)
         result["lines"] = text.splitlines()[-tail:]
     except Exception as e:  # noqa: BLE001
         result["error"] = sanitize_error(str(e))[:300]
@@ -445,8 +452,7 @@ def job_logs(db: Session, job: Job, tail: int = 500) -> dict:
         if entries:
             link = entries[0].get("logLink") or entries[0].get("logName") or ""
             result["link"] = link
-            text = (httpx.get(link, timeout=10).text if link.startswith("http")
-                    else _st_get(env_dict, f"/logs/{link}", raw=True, timeout=15))
+            text = _fetch_log_text(env_dict, link)
             result["lines"] = _pack(text)
             return result
         # 兜底：引擎主日志按 jobId 过滤
@@ -458,8 +464,7 @@ def job_logs(db: Session, job: Job, tail: int = 500) -> dict:
             return result
         link = engine.get("logLink") or engine.get("logName") or ""
         result["link"] = link
-        text = (httpx.get(link, timeout=10).text if link.startswith("http")
-                else _st_get(env_dict, f"/logs/{link}", raw=True, timeout=15))
+        text = _fetch_log_text(env_dict, link)
         hits = [l for l in text.splitlines() if job.seatunnel_job_id in l]
         if hits:
             result["lines"] = hits[-tail:]

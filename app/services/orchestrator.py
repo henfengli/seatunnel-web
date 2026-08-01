@@ -32,6 +32,18 @@ def _fail(db: Session, job: Job, event: str, message: str) -> dict:
     return {"ok": False, "error": message}
 
 
+def _remote_running(db: Session, job: Job) -> bool:
+    """作业实际是否在跑：DB 状态为准；DB 非 RUNNING 但有 seatunnel_job_id 时核实远端
+    （上次 stop 失败的残留可能还在跑），核实不到按不在跑处理。两条编排（update/migrate）共用，
+    避免跳过停止直接动表/重提交出双写。"""
+    if job.status == "RUNNING":
+        return True
+    if not job.seatunnel_job_id:
+        return False
+    info = st.job_info(db, job.env, job.seatunnel_job_id)
+    return bool(info and str(info.get("jobStatus", "")).upper() == "RUNNING")
+
+
 def _find_running_conflict(db: Session, job: Job) -> Job | None:
     """防双作业重复消费：查同 env + 同数据源 + 同源对象的 RUNNING 作业（排除自身）。"""
     return (
@@ -145,6 +157,7 @@ def stop(db: Session, job: Job, with_savepoint: bool = True) -> dict:
         st.post(db, job.env, "/stop-job",
                 json={"jobId": int(job.seatunnel_job_id), "isStopWithSavePoint": with_savepoint})
         job.status = "STOPPED"
+        job.status_detail = None  # 成功即清：过期错误不再挂详情页（与 submit/update 一致）
         _event(db, job, "stop", f"isStopWithSavePoint={with_savepoint}")
         db.add(job)
         db.commit()
@@ -219,10 +232,7 @@ def update_and_restart(db: Session, job: Job, note: str = "") -> dict:
     old_job_id = job.seatunnel_job_id
     # 非 RUNNING 但 SeaTunnel 侧旧作业可能实际还在跑（上次 stop 失败的残留）：
     # 核实后按"在跑"处理，避免跳过停止直接重提交出双作业
-    old_running = False
-    if old_job_id and prev_status != "RUNNING":
-        info = st.job_info(db, job.env, old_job_id)
-        old_running = bool(info and str(info.get("jobStatus", "")).upper() == "RUNNING")
+    old_running = _remote_running(db, job)
 
     # CAS：原子的 prev -> UPDATING，防与批量/手动并发编排
     n = (db.query(Job)
@@ -365,8 +375,8 @@ def migrate_recreate(db: Session, job: Job, decisions: dict) -> dict:
     if errs:
         return {"ok": False, "exprs_errors": errs}
 
-    # 1) 运行中先带 savepoint 停止（kafka 位点保留，恢复后不漏数）
-    was_running = job.status == "RUNNING"
+    # 1) 运行中（含 DB 非 RUNNING 但远端实际还在跑的残留）先带 savepoint 停止（位点保留，恢复后不漏数）
+    was_running = _remote_running(db, job)
     old_st_id = job.seatunnel_job_id
     if was_running:
         stop_res = stop(db, job, with_savepoint=True)

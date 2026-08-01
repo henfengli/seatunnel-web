@@ -73,7 +73,7 @@ def environment_list(request: Request, db: Session = Depends(get_db)):
         status, title = health.env_aggregate(env.health)
         env_rows.append({
             "env": env,
-            "masters": [m.split("://")[-1] for m in envs.parse_masters(env.seatunnel_masters)],
+            "masters": envs.master_hosts(env),
             "job_count": sum(counts.get(env.name, {}).values()),
             "health": status,
             "health_title": title,

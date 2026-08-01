@@ -63,6 +63,10 @@ python -m app.main
 运行数据全部在 `data/` 目录（vision.db + secret.key），**备份 = 拷目录**。
 注意 `secret.key` 是密码加密密钥，丢失则已存的数据源/环境密码无法解密。
 
+留档策略：指标样本保留 14 天（`watchdog.metrics_retention_days` 可调，自动清理）；
+作业版本快照（JobVersion）与事件时间线（JobEvent）全量留档、不自动清理——
+内部工具规模下增长可忽略，需要瘦身时直接删表即可。
+
 ## 验证
 
 测试用 pytest 组织在 `tests/` 下（不依赖外部服务，SeaTunnel/Doris 均为 mock，

@@ -9,8 +9,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from app.models import Datasource, Environment, Job, JobEvent
-from app.services import doris_ddl, orchestrator
+from app.models import Datasource, Environment, Job, JobEvent, ProtoPackage
+from app.services import doris_ddl, orchestrator, proto_center
 
 from .helpers import check
 
@@ -539,6 +539,41 @@ def test_migrate_recreate_rollback(db, monkeypatch):
     check("错误说明已回滚", "已回滚为原表" in res["error"], res.get("error", ""))
     events = [e.detail for e in db.query(JobEvent).filter_by(job_id=job.id, event="migrate")]
     check("失败事件留档", any("已回滚为原表" in d for d in events), str(events))
+
+
+PROTO_V = 'syntax = "proto3"; message V { int64 id = 1; int64 ts = 2; string v = 3; }'
+
+
+def test_migrate_recreate_remote_running(db, monkeypatch):
+    """N1 回归：DB=ERROR 但远端实际在跑（上次 stop 失败残留）——迁移前必须先 stop 再动表，
+    迁移后按"原本在跑"恢复作业。"""
+    job = _mk_migrate_job(db, name="mg_e2e_remote")
+    pkg = ProtoPackage(name="v", content=PROTO_V, parsed=proto_center.parse_proto(PROTO_V),
+                       status="current", current_version="v1")
+    db.add(pkg)
+    db.commit()
+    job.proto_package_id = pkg.id
+    job.message_name = "V"
+    job.options = {"table_model": "UNIQUE"}  # 与 SHOW_CREATE_UNIQUE 一致，恢复提交才过预检
+    job.status = "ERROR"
+    job.status_detail = "上次停止失败"
+    job.seatunnel_job_id = "733584788375666689"
+    db.add(job)
+    db.commit()
+    ST["status"] = "RUNNING"  # 远端实际还在跑
+    stops0 = ST["stops"]
+    fc = FakeConn(col_rows=[("id", "bigint"), ("ts", "datetimev2(3)"), ("v", "varchar(512)")],
+                  show_create=SHOW_CREATE_UNIQUE, counts=(100, 100))
+    monkeypatch.setattr(doris_ddl, "connect", lambda d, **kw: fc)
+    res = orchestrator.migrate_recreate(db, job, {})
+    check("迁移编排成功", res["ok"], str(res))
+    check("DB 非 RUNNING 也先停了远端", ST["stops"] == stops0 + 1, str(ST))
+    check("迁移后恢复原运行状态", job.status == "RUNNING", job.status)
+    events = [e.detail for e in db.query(JobEvent).filter_by(job_id=job.id, event="migrate")]
+    check("停止+完成事件留档", any("savepoint 停止" in d for d in events)
+          and any("数据迁移完成" in d for d in events), str(events))
+    ST["stops"] = 0  # 恢复共享 mock 计数（test_submit_precheck 断言 stops==0/submits 为空）
+    ST["submits"].clear()
 
 
 # ---------------------------------------------------------------- 提交/更新预检（mock SeaTunnel）

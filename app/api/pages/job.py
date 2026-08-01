@@ -399,12 +399,13 @@ def _recreate_ctx(db: Session, job: Job) -> dict:
     """重建页上下文：兼容性判定 + 迁移计划（Doris 不可达时 error 降级）。"""
     ctx: dict = {"compat": None, "plan": [], "dropped": [], "error": None}
     try:
+        doris = envs.get_env(db, job.env)["doris"]
         compat = doris_ddl.check_compat(
-            envs.get_env(db, job.env)["doris"], job.doris_db, job.doris_table,
+            doris, job.doris_db, job.doris_table,
             job.field_mapping, job.ttl, job.table_model, job.buckets)
         ctx["compat"] = compat
         if compat["exists"]:
-            variant = bool(envs.get_env(db, job.env)["doris"].get("variant_enabled", True))
+            variant = bool(doris.get("variant_enabled", True))
             desired_keys = doris_ddl.key_columns(
                 job.field_mapping,
                 {"column": job.ttl["column"]} if job.ttl else None)
